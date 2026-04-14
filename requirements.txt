@@ -1,0 +1,45 @@
+# ── Core API ─────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.30.0
+pydantic==2.7.1
+
+# ── Data Processing ─────────────────────────────────────
+pandas==2.2.2
+numpy==1.26.4
+scipy==1.13.1
+
+# ── Machine Learning ────────────────────────────────────
+scikit-learn==1.5.0
+xgboost==2.0.3
+
+# ── Explainability ──────────────────────────────────────
+shap==0.45.1
+
+# ── File Handling / Utilities ───────────────────────────
+python-multipart==0.0.9
+joblib==1.4.2
+
+# ── Async / Background Jobs ─────────────────────────────
+celery==5.4.0
+redis==5.0.4
+
+# ── Database ────────────────────────────────────────────
+sqlalchemy==2.0.30
+
+# ── Config / Env ────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── Reporting ───────────────────────────────────────────
+reportlab==4.2.0
+
+# ── Optional (Safe Fallback Supported in Your Code) ─────
+# These are optional — your system won't break if missing
+openai>=1.30.0
+lightgbm>=4.3.0
+featuretools>=1.30.0
+mlflow>=2.13.0
+wandb>=0.17.0
+category-encoders>=2.6.3
+
+# ── Dev / Testing ───────────────────────────────────────
+pytest==8.2.0

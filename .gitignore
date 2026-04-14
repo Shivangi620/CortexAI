@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+
+# Runtime/state artifacts
+automl_studio.db
+dump.rdb
+tmp/
+backend/tmp/
+
+# Model/export artifacts
+*.pkl
+*.zip
