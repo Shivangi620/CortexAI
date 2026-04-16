@@ -1,0 +1,10 @@
+{
+  "build": {
+    "builder": "dockerfile"
+  },
+  "deploy": {
+    "startCommand": "uvicorn main:app --host 0.0.0.0 --port $PORT --app-dir /app/backend",
+    "restartPolicyCondition": "on-failure",
+    "restartPolicyMaxRetries": 5
+  }
+}
