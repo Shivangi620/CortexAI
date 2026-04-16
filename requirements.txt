@@ -12,6 +12,9 @@ scipy>=1.13.1
 scikit-learn==1.5.0
 xgboost==2.0.3
 
+# ── UI / Frontend
+streamlit>=1.30.0,<2
+
 # ── Explainability ──────────────────────────────────────
 shap==0.45.1
 
