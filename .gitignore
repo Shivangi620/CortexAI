@@ -11,3 +11,7 @@ backend/tmp/
 # Model/export artifacts
 *.pkl
 *.zip
+
+# Run artifacts
+runs/
+backend/runs/
