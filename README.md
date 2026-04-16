@@ -91,6 +91,63 @@ Once the application is live on `http://localhost:8000`, follow these steps:
 
 ---
 
+## 🌐 Deployment Options
+
+### Quick Deploy (Recommended for Beginners)
+
+#### 1. Railway (Easiest - 5 minutes)
+```bash
+# Install Railway CLI
+npm install -g @railway/cli
+
+# Login and deploy
+railway login
+railway init automl-studio
+railway up
+```
+
+#### 2. Render (Free tier available)
+```bash
+# Run setup script
+bash setup-render.sh
+
+# Then deploy via Render dashboard
+# Go to render.com and connect your GitHub repo
+```
+
+#### 3. Docker (Most Flexible)
+```bash
+# Build and run with Docker Compose
+docker-compose up -d
+
+# Access at http://localhost:8000
+```
+
+### Advanced Deployment
+
+#### AWS/GCP/Azure
+- Use Elastic Beanstalk, App Engine, or App Service
+- Add RDS/Cloud SQL for database persistence
+- Use Cloud Storage for model artifacts
+
+#### Heroku
+```bash
+# Create Heroku app
+heroku create your-automl-studio
+
+# Deploy
+git push heroku main
+```
+
+### Production Considerations
+- **Database**: Add PostgreSQL for production data persistence
+- **Redis**: Required for background job queuing
+- **Storage**: Use cloud storage (S3, GCS) for large model files
+- **Scaling**: Consider load balancer for multiple instances
+- **Security**: Add authentication, rate limiting, and input validation
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request or open an Issue for any bugs, feature requests, or improvements.
