@@ -2,8 +2,12 @@
 from fastapi import APIRouter, Query
 from typing import Optional
 import json
+import math
+from pydantic import BaseModel
 
-from infra.database import get_db, ExperimentRun
+from infra.database import get_db, ExperimentRun, ModelRegistryEntry, TeamNote
+from infra.result_contract import sanitize_for_json
+from services.studio_service import experiment_diff
 
 router = APIRouter(prefix="/api", tags=["experiments"])
 
@@ -40,16 +44,16 @@ def list_experiments(limit: int = 50, task_type: Optional[str] = None):
                 "dataset_id": r.dataset_id,
                 "model_name": r.model_name,
                 "metric_name": r.metric_name,
-                "score": r.score,
+                "score": _safe_float(r.score),
                 "task_type": r.task_type,
                 "mode": r.mode,
                 "goal": r.goal,
                 "feature_count": r.feature_count,
                 "row_count": r.row_count,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
-                "hyperparams": hyperparams,
-                "metrics": metrics,
-                "leaderboard": leaderboard,
+                "hyperparams": sanitize_for_json(hyperparams),
+                "metrics": sanitize_for_json(metrics),
+                "leaderboard": sanitize_for_json(leaderboard),
             })
         return result
 
@@ -86,16 +90,22 @@ def compare_experiments(ids: str = Query(..., description="Comma-separated exper
                 "feature_count": r.feature_count,
                 "row_count": r.row_count,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
-                "hyperparams": hyperparams,
-                "metrics": metrics,
+                "hyperparams": sanitize_for_json(hyperparams),
+                "metrics": sanitize_for_json(metrics),
             })
 
     return {"comparison": comparison, "count": len(comparison)}
 
 
+@router.get("/experiments/diff")
+def diff_experiments(run_a: str = Query(...), run_b: str = Query(...)):
+    return experiment_diff(run_a, run_b)
+
+
 def _safe_float(value):
     try:
-        return float(value)
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
     except (TypeError, ValueError):
         return None
 
@@ -128,14 +138,75 @@ def get_experiment(run_id: str):
             "job_id": r.job_id,
             "model_name": r.model_name,
             "metric_name": r.metric_name,
-            "score": r.score,
+            "score": _safe_float(r.score),
             "task_type": r.task_type,
             "mode": r.mode,
             "goal": r.goal,
             "feature_count": r.feature_count,
             "row_count": r.row_count,
             "created_at": r.created_at.isoformat() if r.created_at else None,
-            "hyperparams": hyperparams,
-            "metrics": metrics,
-            "leaderboard": leaderboard,
+            "hyperparams": sanitize_for_json(hyperparams),
+            "metrics": sanitize_for_json(metrics),
+            "leaderboard": sanitize_for_json(leaderboard),
         }
+
+
+@router.get("/experiments/{run_id}/registry")
+def get_registry(run_id: str):
+    with get_db() as db:
+        row = db.query(ModelRegistryEntry).filter(ModelRegistryEntry.run_id == run_id).first()
+        if not row:
+            return {"run_id": run_id, "label": None, "note": None}
+        return {"run_id": run_id, "label": row.label, "note": row.note}
+
+
+class RegistryRequest(BaseModel):
+    label: str
+    note: Optional[str] = None
+
+
+@router.post("/experiments/{run_id}/registry")
+def save_registry(run_id: str, req: RegistryRequest):
+    with get_db() as db:
+        row = db.query(ModelRegistryEntry).filter(ModelRegistryEntry.run_id == run_id).first()
+        if row:
+            row.label = req.label
+            row.note = req.note
+        else:
+            db.add(ModelRegistryEntry(run_id=run_id, label=req.label, note=req.note))
+    return {"run_id": run_id, "label": req.label, "note": req.note}
+
+
+@router.get("/notes/{entity_type}/{entity_id}")
+def get_notes(entity_type: str, entity_id: str):
+    with get_db() as db:
+        rows = (
+            db.query(TeamNote)
+            .filter(TeamNote.entity_type == entity_type, TeamNote.entity_id == entity_id)
+            .order_by(TeamNote.created_at.desc())
+            .all()
+        )
+        return {
+            "notes": [
+                {
+                    "id": row.id,
+                    "note": row.note,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+                for row in rows
+            ]
+        }
+
+
+class TeamNoteRequest(BaseModel):
+    note: str
+
+
+@router.post("/notes/{entity_type}/{entity_id}")
+def add_note(entity_type: str, entity_id: str, req: TeamNoteRequest):
+    text = (req.note or "").strip()
+    if not text:
+        return {"error": "Note cannot be empty."}
+    with get_db() as db:
+        db.add(TeamNote(entity_type=entity_type, entity_id=entity_id, note=text))
+    return {"ok": True}

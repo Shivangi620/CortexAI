@@ -365,7 +365,9 @@ if __name__ == "__main__":
 
 
 def _inference_script_content(feature_names, target_name, best_model_name):
-    example_features = {f: "..." for f in (feature_names or [])[: min(6, len(feature_names or []))]}
+    example_features = {
+        f: "..." for f in (feature_names or [])[: min(6, len(feature_names or []))]
+    }
     return f'''"""
 Inference helpers for the exported AutoML model.
 """
@@ -409,120 +411,12 @@ if __name__ == "__main__":
 '''
 
 
-def _api_script_content(best_model_name: str, target_name: str, feature_names):
-    return f'''"""
-FastAPI wrapper for the exported AutoML model.
-Run with: uvicorn api:app --reload
-"""
-
-from typing import Any, Dict, List
-
-import joblib
-import pandas as pd
-from fastapi import FastAPI
-from pydantic import BaseModel
-
-raw_obj = joblib.load("model.pkl")
-if isinstance(raw_obj, dict) and "model" in raw_obj:
-    bundle = raw_obj
-    model = bundle["model"]
-    FEATURE_NAMES = bundle.get("features", [])
-else:
-    bundle = {{"model": raw_obj, "features": []}}
-    model = raw_obj
-    FEATURE_NAMES = {feature_names}
-
-app = FastAPI(
-    title="AutoML Export API",
-    description="Prediction API for {best_model_name}",
-    version="1.0.0",
-)
-
-
-class PredictRequest(BaseModel):
-    records: List[Dict[str, Any]]
-
-
-@app.get("/health")
-def health():
-    return {{"status": "ok", "model": "{best_model_name}", "target": "{target_name}"}}
-
-
-@app.post("/predict")
-def predict(req: PredictRequest):
-    frame = pd.DataFrame(req.records, columns=FEATURE_NAMES)
-    preds = model.predict(frame)
-    values = [float(p) if hasattr(p, "item") else p for p in preds]
-    response = {{"predictions": values}}
-    if hasattr(model, "predict_proba") and len(frame) > 0:
-        try:
-            proba = model.predict_proba(frame)
-            response["confidence_pct"] = [round(float(max(row)) * 100, 2) for row in proba]
-        except Exception:
-            pass
-    return response
-'''
-
-
-def _batch_predict_script_content():
-    return '''"""
-Batch CSV-to-CSV prediction helper.
-Usage:
-    python batch_predict.py input.csv output.csv
-"""
-
-import sys
-import joblib
-import pandas as pd
-
-
-raw_obj = joblib.load("model.pkl")
-if isinstance(raw_obj, dict) and "model" in raw_obj:
-    bundle = raw_obj
-    model = bundle["model"]
-    FEATURE_NAMES = bundle.get("features", [])
-else:
-    bundle = {{"model": raw_obj, "features": []}}
-    model = raw_obj
-    FEATURE_NAMES = {feature_names}
-
-
-def main():
-    input_path = sys.argv[1] if len(sys.argv) > 1 else "input.csv"
-    output_path = sys.argv[2] if len(sys.argv) > 2 else "predictions.csv"
-
-    df = pd.read_csv(input_path)
-    frame = df.copy()
-    frame = frame[FEATURE_NAMES]
-
-    preds = model.predict(frame)
-    out = df.copy()
-    out["prediction"] = [float(p) if hasattr(p, "item") else p for p in preds]
-
-    if hasattr(model, "predict_proba"):
-        try:
-            proba = model.predict_proba(frame)
-            out["confidence_pct"] = [round(float(max(row)) * 100, 2) for row in proba]
-        except Exception:
-            pass
-
-    out.to_csv(output_path, index=False)
-    print(f"Saved predictions to {output_path}")
-
-
-if __name__ == "__main__":
-    main()
-'''
-
-
 def _requirements_content(best_model_name: str, preprocessor_name: str):
     deps = [
         "pandas>=2.0.0",
         "numpy>=1.24.0",
         "scikit-learn>=1.3.0",
         "joblib>=1.3.0",
-        "fastapi>=0.110.0",
-        "uvicorn>=0.27.0",
     ]
 
     if preprocessor_name in {"lite_column_transformer", "full_column_transformer"}:
@@ -534,23 +428,6 @@ def _requirements_content(best_model_name: str, preprocessor_name: str):
 
     deps.extend(["shap>=0.44.0", "optuna>=3.0.0"])
     return "\n".join(dict.fromkeys(deps)) + "\n"
-
-
-def _curl_examples_content():
-    return """# Curl Examples
-
-## Health
-```bash
-curl http://localhost:8000/health
-```
-
-## Single record prediction
-```bash
-curl -X POST http://localhost:8000/predict \\
-  -H "Content-Type: application/json" \\
-  -d @sample_input.json
-```
-"""
 
 
 def _explain_script_content():
@@ -634,38 +511,6 @@ def _feature_dictionary(schema_data: dict, feature_names, profile: dict):
     return json.dumps(entries, indent=2)
 
 
-def _make_sample_artifacts(model_path: str, dataset_path: str, feature_names):
-    if not model_path or not os.path.exists(model_path) or not dataset_path or not os.path.exists(dataset_path):
-        return "{}", json.dumps({"predictions": []}, indent=2)
-
-    try:
-        bundle_or_model = joblib.load(model_path)
-        model = bundle_or_model
-        df = pd.read_csv(dataset_path)
-        if df.empty:
-            return "{}", json.dumps({"predictions": []}, indent=2)
-
-        usable_features = [f for f in (feature_names or []) if f in df.columns]
-        if not usable_features:
-            return "{}", json.dumps({"predictions": []}, indent=2)
-
-        sample_df = df[usable_features].head(2).copy()
-        sample_input = {"records": json.loads(sample_df.to_json(orient="records"))}
-        preds = model.predict(sample_df)
-        sample_output = {
-            "predictions": [float(p) if hasattr(p, "item") else p for p in preds]
-        }
-        if hasattr(model, "predict_proba"):
-            try:
-                proba = model.predict_proba(sample_df)
-                sample_output["confidence_pct"] = [round(float(max(row)) * 100, 2) for row in proba]
-            except Exception:
-                pass
-        return json.dumps(sample_input, indent=2), json.dumps(sample_output, indent=2)
-    except Exception:
-        return "{}", json.dumps({"predictions": []}, indent=2)
-
-
 def _readme_content(
     best_model_name: str,
     metric_name: str,
@@ -679,10 +524,14 @@ def _readme_content(
     intended_use: str,
 ):
     display_score = _display_metric(metric_name, score_val)
-    feature_list = "\n".join(f"- `{f}`" for f in (feature_names or [])) or "- *(not available)*"
+    feature_list = (
+        "\n".join(f"- `{f}`" for f in (feature_names or [])) or "- *(not available)*"
+    )
     tested_lines = []
     for item in tested_models[:10] if isinstance(tested_models, list) else []:
-        line = f"- `{item.get('model', 'Unknown')}` | status={item.get('status', 'n/a')}"
+        line = (
+            f"- `{item.get('model', 'Unknown')}` | status={item.get('status', 'n/a')}"
+        )
         if item.get("sweep_score") is not None:
             line += f" | sweep={item.get('sweep_score')}%"
         if item.get("best_cv_score") is not None:
@@ -711,7 +560,6 @@ def _readme_content(
 - `model.pkl`: trained pipeline bundle ready for inference
 - `training.py`: reproducible end-to-end training script
 - `inference.py`: small prediction helper
-- `api.py`: FastAPI prediction wrapper
 - `model_metadata.json`: saved model metadata from the run
 - `metrics.json`: result payload from the run
 - `schema.json`: saved data contract / schema snapshot when available
@@ -730,10 +578,9 @@ def _readme_content(
 | Key risks | {"; ".join(risks) if risks else "Model quality depends on data drift, missing-value patterns, and input consistency."} |
 
 ## Quick Start
-1. Install dependencies: `pip install pandas scikit-learn joblib fastapi uvicorn category_encoders lightgbm xgboost`
+1. Install dependencies: `pip install pandas scikit-learn joblib category_encoders lightgbm xgboost`
 2. Retrain on a dataset: `python training.py path/to/dataset.csv`
-3. Run local inference API: `uvicorn api:app --reload`
-4. Load the trained bundle in Python with `joblib.load("model.pkl")`
+3. Load the trained bundle in Python with `joblib.load("model.pkl")`
 """
 
 
@@ -757,7 +604,9 @@ def create_export_bundle(job_id: str, results: dict) -> str:
     merged_results = dict(saved_metrics) if isinstance(saved_metrics, dict) else {}
     merged_results.update(results or {})
 
-    feature_names = merged_results.get("feature_names", []) or model_metadata.get("feature_names", [])
+    feature_names = merged_results.get("feature_names", []) or model_metadata.get(
+        "feature_names", []
+    )
     target_name = merged_results.get("target", "target")
     best_model_name = merged_results.get("best_model", "Unknown")
     is_clf = bool(merged_results.get("is_classification", True))
@@ -766,7 +615,9 @@ def create_export_bundle(job_id: str, results: dict) -> str:
     execution_profile = merged_results.get("execution_profile", {})
     tested_models = merged_results.get("tested_models", [])
     preprocessor_name = model_metadata.get("preprocessor", "lite_column_transformer")
-    training_date = time.strftime("%Y-%m-%d", time.localtime(model_metadata.get("timestamp", time.time())))
+    training_date = time.strftime(
+        "%Y-%m-%d", time.localtime(model_metadata.get("timestamp", time.time()))
+    )
 
     profile = {}
     dataset_path = ""
@@ -780,37 +631,56 @@ def create_export_bundle(job_id: str, results: dict) -> str:
                 try:
                     job_snapshot = {
                         "story": job.story,
-                        "insights": json.loads(job.insights_json) if job.insights_json else {},
-                        "reasoning": json.loads(job.reasoning_json) if job.reasoning_json else [],
-                        "params": json.loads(job.params_json) if job.params_json else {},
+                        "insights": (
+                            json.loads(job.insights_json) if job.insights_json else {}
+                        ),
+                        "reasoning": (
+                            json.loads(job.reasoning_json) if job.reasoning_json else []
+                        ),
+                        "params": (
+                            json.loads(job.params_json) if job.params_json else {}
+                        ),
                     }
                 except Exception:
-                    job_snapshot = {"story": job.story, "insights": {}, "reasoning": [], "params": {}}
-                dataset = db.query(DatasetModel).filter(DatasetModel.id == job.dataset_id).first()
+                    job_snapshot = {
+                        "story": job.story,
+                        "insights": {},
+                        "reasoning": [],
+                        "params": {},
+                    }
+                dataset = (
+                    db.query(DatasetModel)
+                    .filter(DatasetModel.id == job.dataset_id)
+                    .first()
+                )
                 if dataset:
                     dataset_path = dataset.file_path or ""
                     try:
-                        profile = json.loads(dataset.profile_json) if dataset.profile_json else {}
+                        profile = (
+                            json.loads(dataset.profile_json)
+                            if dataset.profile_json
+                            else {}
+                        )
                     except Exception:
                         profile = {}
     except Exception:
         profile = {}
         dataset_path = ""
 
-    sample_input_json, sample_output_json = _make_sample_artifacts(
-        model_path=model_path,
-        dataset_path=dataset_path,
-        feature_names=feature_names,
-    )
-
     risks = []
     execution_risks = []
     if execution_profile.get("use_full_preprocessor"):
-        execution_risks.append("Full-mode preprocessing may be more sensitive to schema drift and dependency mismatch.")
+        execution_risks.append(
+            "Full-mode preprocessing may be more sensitive to schema drift and dependency mismatch."
+        )
     if (profile or {}).get("missing_pct", 0):
-        execution_risks.append("Input data with different missing-value patterns may degrade performance.")
+        execution_risks.append(
+            "Input data with different missing-value patterns may degrade performance."
+        )
     if (profile or {}).get("imbalance") == "High ⚠️":
-        execution_risks.append("Class imbalance in production can affect recall and calibration.")
+        execution_risks.append(
+            "Class imbalance in production can affect recall and calibration."
+        )
     risks = execution_risks[:3]
 
     zip_path = os.path.join(export_dir, f"{job_id}_bundle.zip")
@@ -825,15 +695,13 @@ def create_export_bundle(job_id: str, results: dict) -> str:
             execution_profile=execution_profile,
             preprocessor_name=preprocessor_name,
         ),
-        "inference.py": _inference_script_content(feature_names, target_name, best_model_name),
-        "api.py": _api_script_content(best_model_name, target_name, feature_names),
-        "batch_predict.py": _batch_predict_script_content(),
+        "inference.py": _inference_script_content(
+            feature_names, target_name, best_model_name
+        ),
         "requirements.txt": _requirements_content(best_model_name, preprocessor_name),
-        "curl_examples.md": _curl_examples_content(),
-        "explain.py": _explain_script_content(),
-        "feature_dictionary.json": _feature_dictionary(schema_data, feature_names, profile),
-        "sample_input.json": sample_input_json,
-        "sample_output.json": sample_output_json,
+        "feature_dictionary.json": _feature_dictionary(
+            schema_data, feature_names, profile
+        ),
         "README.md": _readme_content(
             best_model_name=best_model_name,
             metric_name=metric_name,
@@ -845,19 +713,6 @@ def create_export_bundle(job_id: str, results: dict) -> str:
             training_date=training_date,
             risks=risks,
             intended_use="Batch or API inference on datasets with the same feature semantics and preprocessing assumptions as training.",
-        ),
-        "export_manifest.json": json.dumps(
-            {
-                "job_id": job_id,
-                "best_model": best_model_name,
-                "target": target_name,
-                "metric_name": metric_name,
-                "score": score_val,
-                "feature_names": feature_names,
-                "execution_profile": execution_profile,
-                "preprocessor": preprocessor_name,
-            },
-            indent=2,
         ),
         "import_bundle.json": json.dumps(
             {

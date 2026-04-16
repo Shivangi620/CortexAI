@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from services.training.preprocessing import auto_clean_data, fuzzy_merge_labels
+from core.file_loader import load_dataframe
 
 
 def test_fuzzy_merge_labels():
@@ -89,3 +90,15 @@ def test_normalize_result_contract_sanitizes_non_finite_values():
     assert normalized["leaderboard"] == [{"model": "A", "score": None, "mse": None}]
     assert normalized["shap_summary"] == {"f1": None, "f2": None}
     assert normalized["reasoning"] == ["ok", None]
+
+
+def test_load_dataframe_supports_markdown_documents():
+    markdown = b"# Churn Notes\n\nCustomer called support twice.\nLikely renewal risk.\n"
+
+    df = load_dataframe(contents=markdown, filename="notes.md")
+
+    assert not df.empty
+    assert list(df.columns) == ["source_file", "segment_type", "segment_index", "text", "text_length"]
+    assert df.iloc[0]["source_file"] == "notes.md"
+    assert df.iloc[0]["segment_type"] == "block"
+    assert "Churn Notes" in df.iloc[0]["text"]

@@ -1,5 +1,5 @@
 """api/routes/predict.py — Live prediction and future sweep endpoints."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import Dict, Any, List
 import json
@@ -9,6 +9,8 @@ import pandas as pd
 
 from infra.database import get_db, JobModel
 from infra.result_contract import normalize_results
+from infra.storage import get_schema_path
+from core.file_loader import load_dataframe
 
 router = APIRouter(prefix="/api", tags=["predict"])
 
@@ -156,4 +158,65 @@ def future_predict(req: FutureRequest):
     return {
         "sweep_feature": req.sweep_feature,
         "predictions": predictions
+    }
+
+
+@router.post("/contract-check/{job_id}")
+async def contract_check(job_id: str, file: UploadFile = File(...)):
+    with get_db() as db:
+        job = db.query(JobModel).filter(JobModel.id == job_id).first()
+        if not job or job.status != "completed":
+            raise HTTPException(status_code=404, detail="Job not completed or not found")
+
+        try:
+            raw_results = json.loads(job.results_json) if job.results_json else {}
+        except Exception:
+            raw_results = {}
+        results = normalize_results(raw_results)
+
+    expected_features = results.get("feature_names") or []
+    schema_path = get_schema_path(job_id)
+    contract_schema = {}
+    if os.path.exists(schema_path):
+        try:
+            with open(schema_path, "r") as handle:
+                contract_schema = json.load(handle).get("schema", {}) or {}
+        except Exception:
+            contract_schema = {}
+
+    try:
+        raw_bytes = await file.read()
+        df = load_dataframe(contents=raw_bytes, filename=file.filename or "inference.csv")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not read inference file: {e}")
+
+    incoming_columns = list(df.columns)
+    missing = sorted(set(expected_features) - set(incoming_columns))
+    extra = sorted(set(incoming_columns) - set(expected_features))
+    dtype_mismatches = []
+    for col in incoming_columns:
+        if col in contract_schema:
+            expected_type = str(contract_schema[col].get("type", "unknown"))
+            actual_type = str(df[col].dtype)
+            if expected_type != "unknown" and actual_type != expected_type:
+                dtype_mismatches.append(
+                    {"column": col, "expected_type": expected_type, "actual_type": actual_type}
+                )
+
+    status = "aligned"
+    if missing or dtype_mismatches:
+        status = "drift_risk"
+    elif extra:
+        status = "warning"
+
+    return {
+        "job_id": job_id,
+        "status": status,
+        "rows": int(len(df)),
+        "expected_feature_count": len(expected_features),
+        "incoming_column_count": len(incoming_columns),
+        "missing_features": missing,
+        "extra_columns": extra,
+        "dtype_mismatches": dtype_mismatches,
+        "incoming_columns": incoming_columns,
     }

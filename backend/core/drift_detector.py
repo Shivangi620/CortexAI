@@ -12,6 +12,9 @@ log = get_logger(__name__)
 
 
 class DriftDetector:
+    MAX_BASELINE_FEATURES = 256
+    MAX_VALUES_PER_FEATURE = 2000
+
     def __init__(self, run_id: str):
         self.run_id = run_id
 
@@ -71,9 +74,14 @@ class DriftDetector:
 
         baseline = {}
 
-        for col in df.select_dtypes(include=[np.number]).columns:
+        numeric_cols = list(df.select_dtypes(include=[np.number]).columns[: self.MAX_BASELINE_FEATURES])
+        for col in numeric_cols:
             try:
-                baseline[col] = df[col].dropna().tolist()
+                values = df[col].dropna().to_numpy()
+                if len(values) > self.MAX_VALUES_PER_FEATURE:
+                    sample_idx = np.linspace(0, len(values) - 1, self.MAX_VALUES_PER_FEATURE, dtype=int)
+                    values = values[sample_idx]
+                baseline[col] = values.tolist()
             except Exception:
                 continue  # skip bad columns safely
 

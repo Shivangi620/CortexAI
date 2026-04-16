@@ -14,6 +14,9 @@ if not exist "venv" (
     call venv\Scripts\activate
 )
 
+set "MPLCONFIGDIR=%TEMP%\matplotlib"
+if not exist "%MPLCONFIGDIR%" mkdir "%MPLCONFIGDIR%"
+
 :: 2. Redis Check
 redis-cli ping >nul 2>&1
 if %ERRORLEVEL% neq 0 (
@@ -28,7 +31,6 @@ echo ✅ Redis is up.
 taskkill /IM "celery.exe" /F >nul 2>&1
 taskkill /IM "uvicorn.exe" /F >nul 2>&1
 taskkill /IM "streamlit.exe" /F >nul 2>&1
-
 :: 4. Start Celery Worker (Windows requires -P eventlet or solo)
 echo Starting Celery Worker...
 cd backend
@@ -43,6 +45,11 @@ cd ..
 
 :: 6. Start Streamlit Frontend
 echo Starting Streamlit Frontend...
-streamlit run frontend/app.py --server.headless true --server.port 8501
+cd frontend
+start /B python -m streamlit run app.py --server.port 8501 --server.headless true
+cd ..
+
+echo Frontend available at http://localhost:8501
+echo API docs available at http://localhost:8000/docs
 
 pause

@@ -34,6 +34,9 @@ else
     source venv/bin/activate
 fi
 
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
+mkdir -p "$MPLCONFIGDIR"
+
 # ── Redis ─────────────────────────────────────────────────────────────────────
 echo "Starting Redis..."
 if ! redis-cli ping &>/dev/null; then
@@ -74,23 +77,17 @@ for i in {1..20}; do
     sleep 1
 done
 
-# ── Streamlit Frontend ────────────────────────────────────────────────────────
-cd "$SCRIPT_DIR"
 echo "Starting Streamlit Frontend..."
-# Ensure streamlit allows large uploads and has a long enough session timeout
-streamlit run frontend/app.py \
-    --server.headless true \
-    --server.port 8501 \
-    --server.maxUploadSize 10240 \
-    --server.maxMessageSize 10240 \
-    --browser.gatherUsageStats false &
+cd "$SCRIPT_DIR/frontend"
+python -m streamlit run app.py --server.port 8501 --server.headless true &
 FRONTEND_PID=$!
+cd "$SCRIPT_DIR"
 
 echo ""
 echo "================================================"
 echo "  AutoML Studio is live!"
 echo "  Frontend:  http://localhost:8501"
-echo "  Backend:   http://localhost:8000/docs"
+echo "  API Docs:  http://localhost:8000/docs"
 echo "  Press [CTRL+C] to stop all services."
 echo "================================================"
 echo " "

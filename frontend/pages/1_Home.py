@@ -1,85 +1,399 @@
 import streamlit as st
 import requests
-import os
+
+from ui_shell import (
+    ensure_session_state,
+    load_css,
+    render_page_shell,
+    render_section_intro,
+    render_workspace_banner,
+)
 
 API_URL = "http://localhost:8000/api"
 
 st.set_page_config(page_title="Home - AutoML Studio", page_icon="🏠", layout="wide")
 
-
-def load_css():
-    css_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "style.css")
-    try:
-        with open(css_path) as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except Exception:
-        pass
-
-
 load_css()
+ensure_session_state()
+st.session_state.setdefault("upload_preview_records", [])
+st.session_state.setdefault("upload_ingest_summary", {})
+st.session_state.setdefault("home_merge_preview", {})
+st.session_state.setdefault("goal_choice", "🎯 Performance(best results)")
+st.session_state.setdefault("mode_choice", "⚖️ Balanced (Standard optimization)")
+st.session_state.setdefault("eval_metric_choice", "Accuracy")
+st.session_state.setdefault("handle_imbalance_choice", False)
+st.session_state.setdefault("auto_clean_choice", True)
+st.session_state.setdefault("cv_folds_choice", 0)
 
-st.markdown('<h2 class="gradient-text">1. Upload & Configure</h2>', unsafe_allow_html=True)
+profile = st.session_state.get("profile") or {}
+render_page_shell(
+    title="Upload And Configure",
+    eyebrow="Data Intake",
+    description="Bring in a fresh dataset or restore an exported run, let the system infer the target, and launch the next AutoML mission from one guided workspace.",
+    stats=[
+        ("Dataset Loaded", "Yes" if st.session_state.get("dataset_id") else "No"),
+        ("Rows", profile.get("rows", "—")),
+        ("Columns", len(profile.get("columns", []) or []) or "—"),
+        ("Run Ready", "Yes" if profile else "Waiting"),
+    ],
+    accent="soft",
+)
+render_workspace_banner()
+render_section_intro(
+    "Workspace Flow",
+    "Ingest data, confirm the prediction setup, and launch training.",
+    "This page keeps the high-friction steps together: file upload, auto-detection, training preferences, advanced controls, and export options.",
+)
+
+st.markdown("### Import Mode", unsafe_allow_html=True)
+import_mode = st.segmented_control(
+    "Choose how you want to ingest data",
+    options=["Upload File", "Connectors", "Merge Studio"],
+    default="Upload File",
+)
 
 SUPPORTED_FORMATS = (
-    "CSV, TSV, TXT, DAT  •  Excel (xlsx, xls, ods)  •  JSON / JSONL  •  "
+    "CSV, TSV, TXT, DAT, Markdown, RTF  •  Excel (xlsx, xls, ods)  •  JSON / JSONL  •  "
     "Parquet, Feather, ORC, Arrow  •  Stata (dta)  •  SAS (sas7bdat)  •  "
-    "SPSS (sav)  •  XML  •  HTML  •  SQLite (db)  •  Pickle (pkl)  •  AutoML export ZIP"
+    "SPSS (sav)  •  XML  •  HTML  •  SQLite (db, sqlite, sqlite3)  •  "
+    "PDF  •  Images (png, jpg, jpeg, webp, bmp, tiff, gif)  •  Pickle (pkl)  •  AutoML export ZIP"
 )
 
-st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+st.markdown(
+    f"""
+    <div class="glass-panel upload-shell">
+        <div class="section-label">INGEST PORTAL</div>
+        <div class="upload-shell__head">
+            <div>
+                <div class="upload-shell__title">Dataset Dock</div>
+                <div class="upload-shell__sub">Push in raw files, document-style sources, database files, or restore a previous AutoML export bundle.</div>
+            </div>
+            <div class="format-chip">Multi-format ready</div>
+        </div>
+    """,
+    unsafe_allow_html=True,
+)
 st.caption(f"**Supported formats:** {SUPPORTED_FORMATS}")
 
-uploaded_file = st.file_uploader(
-    "📂 Drag & Drop your Dataset here",
-    type=None,   # Accept ALL file types — backend handles format detection
-    help="Supports regular datasets plus exported AutoML ZIP bundles that restore the training dataset and past run artifacts."
+if import_mode == "Upload File":
+    upload_handling = st.selectbox(
+        "Upload Handling",
+        [
+            "Auto Detect",
+            "PDF - Plain Text",
+            "PDF - Tables",
+            "Delimited Text / CSV",
+            "Database File",
+            "Image OCR",
+        ],
+        help="Auto Detect is the default and recommended path for most uploads.",
+    )
+
+    uploaded_file = st.file_uploader(
+        "📂 Drag & Drop your Dataset here",
+        type=None,
+        help="Supports tabular files, SQLite databases, PDFs, image uploads with OCR extraction, text-style documents, and exported AutoML ZIP bundles.",
+    )
+
+    if uploaded_file is not None:
+        last_file = st.session_state.get('last_analyzed_file')
+        current_file_key = f"{uploaded_file.name}_{uploaded_file.size}_{upload_handling}"
+
+        if last_file != current_file_key:
+            with st.spinner("🧬 Analyzing Neural DNA..."):
+                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/octet-stream")}
+                pdf_mode = "text"
+                if upload_handling == "PDF - Tables":
+                    pdf_mode = "tables"
+                try:
+                    res = requests.post(
+                        f"{API_URL}/upload",
+                        files=files,
+                        data={"pdf_mode": pdf_mode},
+                        timeout=600,
+                    )
+                    if res.status_code == 200:
+                        data = res.json()
+                        if "error" in data:
+                            st.error(data["error"])
+                        else:
+                            st.session_state['dataset_id'] = data['dataset_id']
+                            st.session_state['profile'] = data['profile']
+                            st.session_state["upload_preview_records"] = data.get("preview_records", [])
+                            st.session_state["upload_ingest_summary"] = data.get("ingest_summary", {})
+                            st.session_state['last_analyzed_file'] = current_file_key
+                            imported_job_id = data.get("imported_job_id")
+                            if imported_job_id:
+                                st.session_state['job_id'] = imported_job_id
+                                st.success(f"✅ **{uploaded_file.name}** restored successfully!")
+                                st.info("This export bundle brought back the training dataset and its completed run. You can jump straight to Results Console or retrain from here.")
+                            else:
+                                st.success(f"✅ **{uploaded_file.name}** processed successfully!")
+
+                            try:
+                                detect_res = requests.post(
+                                    f"{API_URL}/detect",
+                                    json={"dataset_id": data['dataset_id']},
+                                    timeout=15,
+                                )
+                                if detect_res.status_code == 200:
+                                    st.session_state['auto_detect'] = detect_res.json()
+                            except Exception:
+                                pass
+                    else:
+                        st.error(f"Backend error: {res.status_code}")
+                except requests.exceptions.ConnectionError:
+                    st.error("❌ Cannot reach backend. Is FastAPI running on port 8000?")
+elif import_mode == "Connectors":
+    connector_left, connector_right = st.columns([1.1, 0.9])
+    with connector_left:
+        connector_type = st.selectbox(
+            "Connector",
+            ["PostgreSQL", "MySQL", "Snowflake", "BigQuery"],
+            key="connector_type",
+        )
+        connector_uri = st.text_input(
+            "Connection URI",
+            placeholder="e.g. postgresql+psycopg://user:pass@host:5432/dbname",
+            key="connector_uri",
+        )
+    with connector_right:
+        connector_query = st.text_area(
+            "SQL Query",
+            value="SELECT * FROM your_table LIMIT 5000",
+            height=110,
+            key="connector_query",
+        )
+
+    if st.button("🔌 Import From Connector", width="stretch"):
+        if not connector_uri.strip() or not connector_query.strip():
+            st.error("Add both a connection URI and a SQL query.")
+        else:
+            with st.spinner("Importing from external source..."):
+                try:
+                    res = requests.post(
+                        f"{API_URL}/import-source",
+                        json={
+                            "source_type": connector_type.lower(),
+                            "connection_uri": connector_uri.strip(),
+                            "query": connector_query.strip(),
+                        },
+                        timeout=120,
+                    )
+                    data = res.json()
+                    if res.status_code == 200 and not data.get("error"):
+                        st.session_state["dataset_id"] = data["dataset_id"]
+                        st.session_state["profile"] = data["profile"]
+                        st.session_state["upload_preview_records"] = data.get("preview_records", [])
+                        st.session_state["upload_ingest_summary"] = data.get("ingest_summary", {})
+                        st.success(f"{connector_type} import completed.")
+                    else:
+                        st.error(data.get("error", f"Import failed: HTTP {res.status_code}"))
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
+else:
+    st.markdown("### Dataset Merge Studio", unsafe_allow_html=True)
+    st.caption("Combine two datasets with guided pickers, preview join quality, then load the merged dataset into the workspace.")
+    try:
+        ds_payload = requests.get(f"{API_URL}/datasets", timeout=10).json()
+        dataset_items = ds_payload.get("datasets", [])
+    except Exception:
+        dataset_items = []
+
+    dataset_items = sorted(
+        dataset_items,
+        key=lambda item: (
+            0 if item.get("id") == st.session_state.get("dataset_id") else 1,
+            item.get("created_at") or "",
+        ),
+        reverse=False,
+    )
+
+    dataset_options = {}
+    for item in dataset_items:
+        label = (
+            f"{(item.get('source_type') or 'dataset').replace('_', ' ').title()} · "
+            f"{item.get('rows', 0)} rows · {item.get('cols', 0)} cols · "
+            f"{(item.get('id') or '')[:8]}"
+        )
+        dataset_options[label] = item
+
+    left_dataset_id = ""
+    right_dataset_id = ""
+    left_join_key = ""
+    right_join_key = ""
+    merge_type = "inner"
+    if not dataset_options:
+        st.info("Upload or import at least two datasets to use Merge Studio.")
+    else:
+        merge_left, merge_right = st.columns(2)
+        with merge_left:
+            left_label = st.selectbox(
+                "Left Dataset",
+                options=list(dataset_options.keys()),
+                index=0,
+            )
+            left_dataset = dataset_options.get(left_label, {})
+            left_dataset_id = left_dataset.get("id") or st.session_state.get("dataset_id") or ""
+            left_columns = left_dataset.get("columns") or []
+            left_join_key = st.selectbox(
+                "Left Join Key",
+                options=left_columns,
+                index=0 if left_columns else 0,
+            ) if left_columns else ""
+        with merge_right:
+            right_label = st.selectbox(
+                "Right Dataset",
+                options=list(dataset_options.keys()),
+                index=1 if len(dataset_options) > 1 else 0,
+            )
+            right_dataset = dataset_options.get(right_label, {})
+            right_dataset_id = right_dataset.get("id") or ""
+            right_columns = right_dataset.get("columns") or []
+            right_join_key = st.selectbox(
+                "Right Join Key",
+                options=right_columns,
+                index=0 if right_columns else 0,
+            ) if right_columns else ""
+        merge_type = st.selectbox("Join Type", ["inner", "left", "right", "outer"])
+        merge_signature = (left_dataset_id, right_dataset_id, left_join_key, right_join_key, merge_type)
+        if st.session_state.get("home_merge_signature") != merge_signature:
+            st.session_state["home_merge_signature"] = merge_signature
+            st.session_state["home_merge_preview"] = {}
+
+        st.caption(f"Available datasets in catalog: {len(dataset_options)}")
+        if left_dataset_id == right_dataset_id and left_dataset_id:
+            st.warning("Choose two different datasets to merge.")
+
+    if st.button("🔍 Preview Merge", width="stretch"):
+        if left_dataset_id == right_dataset_id:
+            st.error("Pick two different datasets.")
+        elif not all([left_dataset_id, right_dataset_id, left_join_key, right_join_key]):
+            st.error("Choose both datasets and both join keys.")
+        else:
+            try:
+                preview_res = requests.post(
+                    f"{API_URL}/merge-studio/preview",
+                    json={
+                        "left_dataset_id": left_dataset_id,
+                        "right_dataset_id": right_dataset_id,
+                        "join_key_left": left_join_key,
+                        "join_key_right": right_join_key,
+                        "join_type": merge_type,
+                    },
+                    timeout=60,
+                )
+                st.session_state["home_merge_preview"] = preview_res.json()
+            except Exception as e:
+                st.session_state["home_merge_preview"] = {"error": str(e)}
+
+    merge_preview = st.session_state.get("home_merge_preview") or {}
+    if merge_preview:
+        if merge_preview.get("error"):
+            st.error(merge_preview["error"])
+        else:
+            preview_cols = st.columns(5)
+            preview_cols[0].metric("Estimated Rows", merge_preview.get("estimated_rows", 0))
+            preview_cols[1].metric("Overlap Keys", merge_preview.get("overlapping_keys", 0))
+            preview_cols[2].metric("Left Match %", f"{merge_preview.get('left_match_pct', 0)}%")
+            preview_cols[3].metric("Right Match %", f"{merge_preview.get('right_match_pct', 0)}%")
+            preview_cols[4].metric("Row Multiplier", merge_preview.get("estimated_row_multiplier", "—"))
+            st.caption(
+                f"Duplicates on join keys: left {merge_preview.get('left_duplicate_keys', 0)} · "
+                f"right {merge_preview.get('right_duplicate_keys', 0)}"
+            )
+            if merge_preview.get("preview_records"):
+                st.dataframe(merge_preview["preview_records"], width="stretch", hide_index=True)
+
+    if st.button("🧬 Merge Datasets", width="stretch"):
+        if left_dataset_id == right_dataset_id:
+            st.error("Pick two different datasets.")
+        elif not all([left_dataset_id, right_dataset_id, left_join_key, right_join_key]):
+            st.error("Choose both datasets and both join keys.")
+        else:
+            with st.spinner("Merging datasets..."):
+                try:
+                    merge_res = requests.post(
+                        f"{API_URL}/merge-studio",
+                        json={
+                            "left_dataset_id": left_dataset_id,
+                            "right_dataset_id": right_dataset_id,
+                            "join_key_left": left_join_key,
+                            "join_key_right": right_join_key,
+                            "join_type": merge_type,
+                        },
+                        timeout=120,
+                    )
+                    merge_data = merge_res.json()
+                    if merge_res.status_code == 200 and not merge_data.get("error"):
+                        st.session_state["dataset_id"] = merge_data["dataset_id"]
+                        st.session_state["profile"] = merge_data["profile"]
+                        st.session_state["upload_preview_records"] = merge_data.get("preview_records", [])
+                        st.session_state["upload_ingest_summary"] = merge_data.get("ingest_summary", {})
+                        st.session_state["home_merge_preview"] = {}
+                        st.success("Merged dataset loaded into workspace.")
+                        merge_summary = merge_data.get("merge_summary", {})
+                        st.caption(
+                            f"{merge_summary.get('join_type', 'inner')} join produced "
+                            f"{merge_summary.get('merged_rows', 0)} rows."
+                        )
+                    else:
+                        st.error(merge_data.get("error", "Merge failed."))
+                except Exception as e:
+                    st.error(f"Merge failed: {e}")
+st.markdown(
+    """
+        <div class="upload-shell__footer">
+            <div class="footer-pill">Auto profiling</div>
+            <div class="footer-pill">Problem inference</div>
+            <div class="footer-pill">Artifact restoration</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
-if uploaded_file is not None:
-    # ── Auto-Analyze on Upload ────────────────────────────────────────────────
-    # Track the last analyzed file to avoid infinite loops
-    last_file = st.session_state.get('last_analyzed_file')
-    current_file_key = f"{uploaded_file.name}_{uploaded_file.size}"
-
-    if last_file != current_file_key:
-        with st.spinner("🧬 Analyzing Neural DNA..."):
-            files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/octet-stream")}
-            try:
-                res = requests.post(f"{API_URL}/upload", files=files, timeout=600)
-                if res.status_code == 200:
-                    data = res.json()
-                    if "error" in data:
-                        st.error(data["error"])
-                    else:
-                        st.session_state['dataset_id'] = data['dataset_id']
-                        st.session_state['profile'] = data['profile']
-                        st.session_state['last_analyzed_file'] = current_file_key
-                        imported_job_id = data.get("imported_job_id")
-                        if imported_job_id:
-                            st.session_state['job_id'] = imported_job_id
-                            st.success(f"✅ **{uploaded_file.name}** restored successfully!")
-                            st.info("This export bundle brought back the training dataset and its completed run. You can jump straight to Results Console or retrain from here.")
-                        else:
-                            st.success(f"✅ **{uploaded_file.name}** processed successfully!")
-
-                        # ── Feature 2: Auto Problem Type Detection ─────────────────────
-                        try:
-                            detect_res = requests.post(
-                                f"{API_URL}/detect",
-                                json={"dataset_id": data['dataset_id']},
-                                timeout=15,
-                            )
-                            if detect_res.status_code == 200:
-                                st.session_state['auto_detect'] = detect_res.json()
-                        except Exception:
-                            pass
-                else:
-                    st.error(f"Backend error: {res.status_code}")
-            except requests.exceptions.ConnectionError:
-                st.error("❌ Cannot reach backend. Is FastAPI running on port 8000?")
-st.markdown('</div>', unsafe_allow_html=True)
-
 if st.session_state.get('profile'):
+    ingest_summary = st.session_state.get("upload_ingest_summary") or {}
+    preview_records = st.session_state.get("upload_preview_records") or []
+
+    if preview_records:
+        st.markdown("### Ingestion Preview", unsafe_allow_html=True)
+        st.dataframe(preview_records, width="stretch", hide_index=True)
+        if ingest_summary:
+            ingest_cols = st.columns(4)
+            ingest_cols[0].metric("Source Type", ingest_summary.get("source_type", "—"))
+            ingest_cols[1].metric("Rows", ingest_summary.get("rows", 0))
+            ingest_cols[2].metric("Columns", ingest_summary.get("columns", 0))
+            ingest_cols[3].metric("Preview Rows", len(preview_records))
+
+        if any("ocr_text" in row for row in preview_records):
+            default_ocr = "\n".join(str(row.get("ocr_text", "")).strip() for row in preview_records if row.get("ocr_text"))
+            reviewed_ocr = st.text_area(
+                "Editable OCR Review",
+                value=default_ocr,
+                height=180,
+                help="Edit extracted OCR text before creating a text dataset from it.",
+            )
+            if st.button("📝 Create Dataset From Reviewed OCR", width="stretch"):
+                try:
+                    ocr_res = requests.post(
+                        f"{API_URL}/dataset/{st.session_state['dataset_id']}/ocr-review",
+                        json={"text": reviewed_ocr},
+                        timeout=60,
+                    )
+                    ocr_data = ocr_res.json()
+                    if ocr_res.status_code == 200 and not ocr_data.get("error"):
+                        st.session_state["dataset_id"] = ocr_data["dataset_id"]
+                        st.session_state["profile"] = ocr_data["profile"]
+                        st.session_state["upload_preview_records"] = ocr_data.get("preview_records", [])
+                        st.session_state["upload_ingest_summary"] = ocr_data.get("ingest_summary", {})
+                        st.success("OCR-reviewed dataset created and loaded into the workspace.")
+                    else:
+                        st.error(ocr_data.get("error", "Failed to create OCR-reviewed dataset."))
+                except Exception as e:
+                    st.error(f"OCR review failed: {e}")
+
     # ── Feature 2: Auto Problem Detection Banner ──────────────────────────────
     detect = st.session_state.get("auto_detect")
     if detect and not detect.get("error"):
@@ -92,19 +406,16 @@ if st.session_state.get('profile'):
         icon = "📈" if task_type == "regression" else "🔵"
         det_color = "#4CAF50" if confidence >= 80 else "#FFA500"
         st.markdown(
-            f"""<div style="background:linear-gradient(135deg,#1a1a2e,#16213e); border:1px solid {det_color}44;
-            border-left: 4px solid {det_color}; border-radius:12px; padding:16px 20px; margin-bottom:12px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-              <div>
-                <span style="font-size:0.8rem;color:{det_color};font-weight:600;letter-spacing:1px;">AUTO-DETECTED</span><br>
-                <span style="font-size:1.15rem;font-weight:700;">
-                  {icon} <b>{task_type.title()}</b> task
-                  &nbsp;·&nbsp; Target: <code>{suggested_t}</code>
-                </span><br>
-                <span style="font-size:0.8rem;opacity:0.7;">{task_reason}</span>
-              </div>
-              <div style="font-size:1.8rem;font-weight:800;color:{det_color};">{confidence}%</div>
-            </div></div>""",
+            f"""
+            <div class="detect-banner" style="--detect-accent:{det_color};">
+                <div>
+                    <div class="detect-banner__eyebrow">AUTO-DETECTED</div>
+                    <div class="detect-banner__title">{icon} {task_type.title()} mission · Target <code>{suggested_t}</code></div>
+                    <div class="detect-banner__copy">{task_reason}</div>
+                </div>
+                <div class="detect-banner__score">{confidence}%</div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
         if warnings:
@@ -115,6 +426,19 @@ if st.session_state.get('profile'):
                     st.info(w)
 
     profile = st.session_state['profile']
+    rows = profile.get("rows", "—")
+    columns_count = len(profile.get("columns", []) or [])
+    missing_total = profile.get("missing_values", 0)
+    st.markdown(
+        f"""
+        <div class="profile-strip">
+            <div class="profile-strip__item"><span>Rows</span><strong>{rows}</strong></div>
+            <div class="profile-strip__item"><span>Columns</span><strong>{columns_count}</strong></div>
+            <div class="profile-strip__item"><span>Missing Cells</span><strong>{missing_total}</strong></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.markdown("### ⚙️ Training Configuration")
 
@@ -133,12 +457,14 @@ if st.session_state.get('profile'):
         goal = st.radio(
             "Select Goal",
             ["🎯 Performance(best results)", "⚡ Speed(fast)", "⚖️ Balanced"],
+            key="goal_choice",
             help="Performance = widest model search | Speed = smaller fast pool | Balanced = strong middle ground"
         )
     with col2:
         mode = st.radio(
             "Select Execution Mode (V3)",
             ["⚡ Fast (Exploration only)", "⚖️ Balanced (Standard optimization)", "🧠 Full (Deep Bayesian Search)"],
+            key="mode_choice",
             help="Fast = sweep only | Balanced = moderate optimization | Full = deeper Bayesian optimization"
         )
 
@@ -165,17 +491,21 @@ if st.session_state.get('profile'):
             detect = st.session_state.get("auto_detect", {})
             task_type = detect.get("task_type") or profile.get("task_type", "classification")
             if task_type == "regression":
+                if st.session_state.get("eval_metric_choice") not in {"RMSE", "R²"}:
+                    st.session_state["eval_metric_choice"] = "RMSE"
                 eval_metric = st.selectbox(
                     "Metric (Regression)",
                     ["RMSE", "R²"],
-                    index=0,
+                    key="eval_metric_choice",
                     help="Default: RMSE. RMSE = Root Mean Squared Error | R² = Coefficient of Determination"
                 )
             else:
+                if st.session_state.get("eval_metric_choice") not in {"Accuracy", "F1-score"}:
+                    st.session_state["eval_metric_choice"] = "Accuracy"
                 eval_metric = st.selectbox(
                     "Metric (Classification)",
                     ["Accuracy", "F1-score"],
-                    index=0,
+                    key="eval_metric_choice",
                     help="Default: Accuracy. F1 = good for imbalanced data."
                 )
 
@@ -185,7 +515,7 @@ if st.session_state.get('profile'):
             st.markdown("#### ⚖️ Handle Imbalance")
             handle_imbalance = st.toggle(
                 "Handle Class Imbalance",
-                value=False,
+                key="handle_imbalance_choice",
                 help="Applies SMOTE / class-weight balancing for skewed target distributions"
             )
 
@@ -208,7 +538,7 @@ if st.session_state.get('profile'):
             st.markdown("#### 🧹 Auto Data Cleaning")
             auto_clean = st.checkbox(
                 "Fix Issues Automatically",
-                value=True,
+                key="auto_clean_choice",
                 help="Fills missing values, removes duplicates, and encodes categories automatically"
             )
 
@@ -220,7 +550,7 @@ if st.session_state.get('profile'):
                 "Number of CV Folds",
                 min_value=0,
                 max_value=10,
-                value=0,
+                key="cv_folds_choice",
                 help="Set to 0-1 to disable CV. 5-10 is standard but takes more time."
             )
 

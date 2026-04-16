@@ -19,9 +19,143 @@ SUPPORTED_EXTENSIONS = {
     ".html", ".htm",
     ".db", ".sqlite", ".sqlite3",
     ".pkl", ".pickle",
+    ".pdf",
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif",
+    ".md", ".markdown", ".rtf",
 }
 
 EXTENSION_LABELS = [ext.lstrip(".") for ext in sorted(SUPPORTED_EXTENSIONS)]
+
+
+def _read_text_payload(target, filepath: str = None) -> str:
+    if filepath:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+
+    if hasattr(target, "seek"):
+        target.seek(0)
+    raw = target.read() if hasattr(target, "read") else target
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
+
+
+def _dataframe_from_text_document(text: str, source_name: str, segment_label: str = "line") -> pd.DataFrame:
+    cleaned = (text or "").replace("\x00", "").strip()
+    if not cleaned:
+        raise ValueError(f"No readable text found in {source_name}.")
+
+    blocks = [block.strip() for block in cleaned.splitlines() if block.strip()]
+    if not blocks:
+        blocks = [cleaned]
+
+    return pd.DataFrame(
+        {
+            "source_file": source_name,
+            "segment_type": segment_label,
+            "segment_index": range(1, len(blocks) + 1),
+            "text": blocks,
+            "text_length": [len(block) for block in blocks],
+        }
+    )
+
+
+def _load_pdf_as_dataframe(
+    target,
+    filepath: str = None,
+    source_name: str = "document.pdf",
+    pdf_mode: str = "text",
+) -> pd.DataFrame:
+    pdf_mode = (pdf_mode or "text").lower().strip()
+
+    if pdf_mode == "tables":
+        try:
+            import pdfplumber
+        except ImportError as exc:
+            raise ValueError("PDF table extraction requires pdfplumber to be installed.") from exc
+
+        table_rows = []
+        with pdfplumber.open(filepath or target) as pdf:
+            for page_idx, page in enumerate(pdf.pages, start=1):
+                try:
+                    extracted_tables = page.extract_tables() or []
+                except Exception:
+                    extracted_tables = []
+
+                for table_idx, table in enumerate(extracted_tables, start=1):
+                    if not table:
+                        continue
+                    normalized = pd.DataFrame(table)
+                    normalized = normalized.dropna(how="all").dropna(axis=1, how="all")
+                    if normalized.empty:
+                        continue
+                    normalized.insert(0, "table_index", table_idx)
+                    normalized.insert(0, "page", page_idx)
+                    normalized.insert(0, "source_file", source_name)
+                    table_rows.append(normalized)
+
+        if table_rows:
+            return pd.concat(table_rows, ignore_index=True)
+        raise ValueError("No tables detected in PDF. Try plain-text mode instead.")
+
+    try:
+        from PyPDF2 import PdfReader
+    except ImportError as exc:
+        raise ValueError("PDF upload requires PyPDF2 to be installed.") from exc
+
+    reader = PdfReader(filepath or target)
+    rows = []
+    for idx, page in enumerate(reader.pages, start=1):
+        try:
+            text = (page.extract_text() or "").strip()
+        except Exception:
+            text = ""
+        rows.append(
+            {
+                "source_file": source_name,
+                "page": idx,
+                "text": text,
+                "text_length": len(text),
+            }
+        )
+
+    if not rows:
+        raise ValueError("No pages found in PDF.")
+
+    if not any(row["text"] for row in rows):
+        raise ValueError("PDF was loaded but no extractable text was found.")
+
+    return pd.DataFrame(rows)
+
+
+def _load_image_as_dataframe(target, filepath: str = None, source_name: str = "image") -> pd.DataFrame:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise ValueError("Image upload requires Pillow to be installed.") from exc
+
+    image = Image.open(filepath or target)
+    width, height = image.size
+    payload = {
+        "source_file": source_name,
+        "format": image.format,
+        "mode": image.mode,
+        "width": width,
+        "height": height,
+        "aspect_ratio": round(width / height, 6) if height else None,
+    }
+
+    extracted_text = ""
+    try:
+        import pytesseract
+
+        extracted_text = (pytesseract.image_to_string(image) or "").strip()
+    except Exception:
+        extracted_text = ""
+
+    payload["ocr_text"] = extracted_text
+    payload["ocr_text_length"] = len(extracted_text)
+    return pd.DataFrame([payload])
 
 
 def _sniff_delimiter(raw_bytes: bytes) -> str:
@@ -37,7 +171,12 @@ def _sniff_delimiter(raw_bytes: bytes) -> str:
         return ","
 
 
-def load_dataframe(contents: bytes = None, filename: str = None, filepath: str = None) -> pd.DataFrame:
+def load_dataframe(
+    contents: bytes = None,
+    filename: str = None,
+    filepath: str = None,
+    pdf_mode: str = "text",
+) -> pd.DataFrame:
 
     # ✅ FIX 2: validate inputs
     if not filepath and contents is None:
@@ -78,6 +217,10 @@ def load_dataframe(contents: bytes = None, filename: str = None, filepath: str =
             if hasattr(target, "seek"):
                 target.seek(0)
             return pd.read_csv(target, sep=delim, encoding_errors="replace", engine="python")
+
+    if ext in {".md", ".markdown", ".rtf"}:
+        text = _read_text_payload(target, filepath=filepath)
+        return _dataframe_from_text_document(text, fname, segment_label="block")
 
     # ── Excel ───────────────────────────────────────────────────────────
     if ext in {".xlsx", ".xlsm"}:
@@ -136,6 +279,12 @@ def load_dataframe(contents: bytes = None, filename: str = None, filepath: str =
         if not tables:
             raise ValueError("No tables found in HTML")
         return max(tables, key=len)
+
+    if ext == ".pdf":
+        return _load_pdf_as_dataframe(target, filepath=filepath, source_name=fname, pdf_mode=pdf_mode)
+
+    if ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}:
+        return _load_image_as_dataframe(target, filepath=filepath, source_name=fname)
 
     # ── SQLite ────────────────────────────────────────────────────────
     if ext in {".db", ".sqlite", ".sqlite3"}:

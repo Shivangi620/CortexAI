@@ -1,21 +1,23 @@
 import os
 import json
-from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 _AI_DISABLED_REASON = None
 
-# ✅ FIX 1: optional import
 try:
     from openai import OpenAI
 except Exception:
     OpenAI = None
+
 def get_openai_client():
     global _AI_DISABLED_REASON
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         _AI_DISABLED_REASON = "missing_openai_api_key"
+        return None
+    if OpenAI is None:
+        _AI_DISABLED_REASON = "openai_package_missing"
         return None
     return OpenAI(api_key=api_key)
 

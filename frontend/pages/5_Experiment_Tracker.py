@@ -1,25 +1,50 @@
 import streamlit as st
 import requests
 import pandas as pd
-import os
+from ui_shell import (
+    ensure_session_state,
+    load_css,
+    render_page_shell,
+    render_section_intro,
+    render_workspace_banner,
+)
 
 API_URL = "http://localhost:8000/api"
 
+
+def api_json(path: str, timeout: int = 10):
+    try:
+        res = requests.get(f"{API_URL}{path}", timeout=timeout)
+        if res.status_code == 200:
+            return res.json()
+        try:
+            payload = res.json()
+            return {"error": payload.get("detail") or payload.get("error") or f"HTTP {res.status_code}"}
+        except Exception:
+            return {"error": f"HTTP {res.status_code}"}
+    except Exception as e:
+        return {"error": str(e)}
+
 st.set_page_config(page_title="Experiment Tracker", page_icon="📊", layout="wide")
 
-
-def load_css():
-    css_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "style.css")
-    try:
-        with open(css_path) as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except Exception:
-        pass
-
-
 load_css()
-st.markdown('<h2 class="gradient-text">📊 Experiment & Leaderboard Hub</h2>', unsafe_allow_html=True)
-st.markdown("Track training runs, compare models, and view the global all-time winners.")
+ensure_session_state()
+render_page_shell(
+    title="Experiment Tracker",
+    eyebrow="Run Archive",
+    description="Review historical runs, surface top performers, compare configurations, and jump back into the strongest models with less hunting.",
+    stats=[
+        ("Active Run", (st.session_state.get("job_id") or "No run")[:8] if st.session_state.get("job_id") else "No run"),
+        ("Dataset", (st.session_state.get("dataset_id") or "No dataset")[:8] if st.session_state.get("dataset_id") else "No dataset"),
+    ],
+    accent="analysis",
+)
+render_workspace_banner()
+render_section_intro(
+    "Comparison Deck",
+    "The tracker is now framed as a review workspace instead of a plain table dump.",
+    "Use the filters, leaderboard, and side-by-side comparison area to understand which runs deserve a closer look.",
+)
 
 # -- New: Global Leaderboard Section --
 with st.expander("🏆 View Global All-Time Leaderboard", expanded=False):
@@ -44,8 +69,6 @@ with st.expander("🏆 View Global All-Time Leaderboard", expanded=False):
                         """, unsafe_allow_html=True)
     except Exception:
         st.caption("Unable to load global stats.")
-
-st.markdown("---")
 
 # ── Fetch experiments ─────────────────────────────────────────────────────────
 try:
@@ -82,6 +105,132 @@ elif sort_by == "Date ↑":
     filtered.sort(key=lambda x: x.get("created_at") or "")
 
 st.markdown(f"**{len(filtered)} experiments** found")
+
+st.markdown(
+    """
+    <div class="tracker-grid">
+        <div class="tracker-panel">
+            <div class="tracker-panel__eyebrow">Archive</div>
+            <div class="tracker-panel__title">Run History Center</div>
+            <div class="tracker-panel__copy">Inspect timelines, reasoning streams, and recent performance progression for individual jobs.</div>
+        </div>
+        <div class="tracker-panel">
+            <div class="tracker-panel__eyebrow">Comparison</div>
+            <div class="tracker-panel__title">Battle Arena</div>
+            <div class="tracker-panel__copy">Compare 2 to 4 models visually, inspect score trade-offs, and review configuration differences in one place.</div>
+        </div>
+        <div class="tracker-panel">
+            <div class="tracker-panel__eyebrow">Registry</div>
+            <div class="tracker-panel__title">Promotion Workflow</div>
+            <div class="tracker-panel__copy">Label runs as champion, challenger, candidate, or archived and attach shared team notes.</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown("---")
+
+st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+st.markdown("### 🕓 Run History Center")
+st.caption("History moved here from Results Console so the archive, run inspector, and battle tools all live together.")
+
+run_lookup = {
+    f"{e.get('model_name', '—')} | {(e.get('created_at') or '')[:16]} | {(e.get('id') or '')[:8]}": e
+    for e in filtered[:50]
+}
+selected_run_label = st.selectbox("Inspect a run", options=list(run_lookup.keys())) if run_lookup else None
+selected_run = run_lookup.get(selected_run_label, {}) if selected_run_label else {}
+selected_job_id = selected_run.get("job_id")
+
+if selected_job_id:
+    status_payload = api_json(f"/status/{selected_job_id}", timeout=10)
+    registry_payload = api_json(f"/experiments/{selected_run.get('id')}/registry", timeout=10)
+    notes_payload = api_json(f"/notes/run/{selected_run.get('id')}", timeout=10)
+    if status_payload.get("error"):
+        st.info(f"Run history is temporarily unavailable: {status_payload['error']}")
+    else:
+        history = status_payload.get("history", []) or []
+        reasoning = status_payload.get("reasoning", []) or []
+        history_df = pd.DataFrame(history)
+
+        hist_left, hist_right = st.columns([1.1, 0.9])
+        with hist_left:
+            if history_df.empty:
+                st.info("No timeline recorded for this run.")
+            else:
+                st.dataframe(history_df, width="stretch", hide_index=True)
+
+        with hist_right:
+            st.metric("History Events", len(history))
+            st.metric("Reasoning Notes", len(reasoning))
+            if not history_df.empty and "metric" in history_df.columns:
+                history_df["metric_numeric"] = pd.to_numeric(history_df["metric"], errors="coerce")
+                curve = history_df[history_df["metric_numeric"].notna()].copy()
+                if not curve.empty:
+                    curve.index = range(1, len(curve) + 1)
+                    st.line_chart(curve.set_index(curve.index)[["metric_numeric"]].rename(columns={"metric_numeric": "Run Score"}))
+
+            if reasoning:
+                with st.expander("Reasoning Stream", expanded=False):
+                    for line in reasoning[:25]:
+                        st.write(f"• {line}")
+
+        st.markdown("#### 🏷️ Model Registry")
+        reg_left, reg_right = st.columns([0.7, 1.3])
+        with reg_left:
+            registry_label = st.selectbox(
+                "Registry Label",
+                ["None", "Champion", "Challenger", "Candidate", "Archived"],
+                index=["None", "Champion", "Challenger", "Candidate", "Archived"].index(
+                    (registry_payload.get("label") or "None").title() if (registry_payload.get("label") or "").title() in ["None", "Champion", "Challenger", "Candidate", "Archived"] else "None"
+                ),
+                key=f"registry_label_{selected_run.get('id')}",
+            )
+        with reg_right:
+            registry_note = st.text_input(
+                "Registry Note",
+                value=registry_payload.get("note") or "",
+                key=f"registry_note_{selected_run.get('id')}",
+            )
+        if st.button("💾 Save Registry Status", width="stretch", key=f"save_registry_{selected_run.get('id')}"):
+            try:
+                requests.post(
+                    f"{API_URL}/experiments/{selected_run.get('id')}/registry",
+                    json={"label": None if registry_label == "None" else registry_label.lower(), "note": registry_note},
+                    timeout=15,
+                )
+                st.success("Registry updated.")
+            except Exception as e:
+                st.error(f"Registry update failed: {e}")
+
+        st.markdown("#### 📝 Team Notes")
+        new_note = st.text_area("Add note for this run", key=f"team_note_{selected_run.get('id')}", height=100)
+        if st.button("➕ Save Note", width="stretch", key=f"save_note_{selected_run.get('id')}"):
+            try:
+                note_res = requests.post(
+                    f"{API_URL}/notes/run/{selected_run.get('id')}",
+                    json={"note": new_note},
+                    timeout=15,
+                )
+                note_data = note_res.json()
+                if note_res.status_code == 200 and not note_data.get("error"):
+                    st.success("Note saved.")
+                else:
+                    st.error(note_data.get("error", "Failed to save note."))
+            except Exception as e:
+                st.error(f"Note save failed: {e}")
+
+        notes = notes_payload.get("notes", []) if isinstance(notes_payload, dict) else []
+        if notes:
+            for note in notes[:8]:
+                st.caption(f"{(note.get('created_at') or '')[:16]} · {note.get('note')}")
+else:
+    st.info("Choose a run to inspect its history and reasoning stream.")
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown("---")
 
 # ── Summary metrics ───────────────────────────────────────────────────────────
 if filtered:
@@ -188,5 +337,77 @@ if selected_labels and len(selected_labels) >= 2:
                 hp = r.get("hyperparams", {})
                 for k, v in hp.items():
                     st.write(f"- **{k}**: `{v}`")
+
+        st.markdown("#### ⚔️ Model Battle Arena")
+        arena_rows = []
+        for r in cmp_data[:4]:
+            metrics = r.get("metrics", {}) or {}
+            arena_rows.append(
+                {
+                    "Model": r.get("model_name", "—"),
+                    "Score": float(r["score"]) if r.get("score") not in (None, "") else 0.0,
+                    "Precision": float(metrics.get("precision") or 0),
+                    "Recall": float(metrics.get("recall") or 0),
+                    "F1": float(metrics.get("f1") or 0),
+                    "Features": float(r.get("feature_count") or 0),
+                }
+            )
+
+        arena_df = pd.DataFrame(arena_rows).set_index("Model")
+        if not arena_df.empty:
+            st.bar_chart(arena_df[["Score", "Precision", "Recall", "F1"]])
+            st.dataframe(arena_df, width="stretch")
+            st.caption("Compare up to four runs at once to spot the strongest trade-offs across score and classification quality.")
+
+        if len(cmp_data) >= 2:
+            st.markdown("#### 🧠 Run-to-Run Diff Engine")
+            diff_left, diff_right = st.columns(2)
+            diff_a = diff_left.selectbox(
+                "Baseline Run",
+                options=selected_labels,
+                key="diff_run_a",
+            )
+            diff_b = diff_right.selectbox(
+                "Compare Against",
+                options=selected_labels,
+                index=1 if len(selected_labels) > 1 else 0,
+                key="diff_run_b",
+            )
+            if diff_a != diff_b:
+                try:
+                    diff_res = requests.get(
+                        f"{API_URL}/experiments/diff",
+                        params={
+                            "run_a": run_options[diff_a],
+                            "run_b": run_options[diff_b],
+                        },
+                        timeout=10,
+                    )
+                    diff_payload = diff_res.json()
+                except Exception as e:
+                    diff_payload = {"error": str(e)}
+
+                if diff_payload.get("error"):
+                    st.error(diff_payload["error"])
+                else:
+                    for line in diff_payload.get("explanations", []):
+                        st.caption(f"• {line}")
+                    diff_tabs = st.columns(2)
+                    with diff_tabs[0]:
+                        st.markdown("**Config Changes**")
+                        config_df = pd.DataFrame(diff_payload.get("config_changes", []))
+                        if config_df.empty:
+                            st.info("No config changes detected.")
+                        else:
+                            st.dataframe(config_df, width="stretch", hide_index=True)
+                    with diff_tabs[1]:
+                        st.markdown("**Output Changes**")
+                        output_df = pd.DataFrame(diff_payload.get("output_changes", []))
+                        if output_df.empty:
+                            st.info("No output changes detected.")
+                        else:
+                            st.dataframe(output_df, width="stretch", hide_index=True)
+else:
+    st.info("Select 2 to 5 runs to unlock side-by-side comparison and the battle arena.")
 
 st.markdown('</div>', unsafe_allow_html=True)

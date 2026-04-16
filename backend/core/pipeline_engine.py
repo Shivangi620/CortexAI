@@ -85,6 +85,7 @@ class PipelineContext:
         self.reasoning: List[str] = []
         self.eda_summary: Dict[str, Any] = {}
         self.tested_models: List[Dict[str, Any]] = []
+        self.execution_profile: Dict[str, Any] = {}
         self._history_callback = None
 
     def record_history(self, label: str, metric: Any, **extra):

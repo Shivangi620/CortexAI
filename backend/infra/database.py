@@ -9,7 +9,12 @@ SQLALCHEMY_DATABASE_URL = "sqlite:///./automl_studio.db"
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
 )
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    expire_on_commit=False,
+)
 
 Base = declarative_base()
 
@@ -133,6 +138,37 @@ class DriftSchedule(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ModelRegistryEntry(Base):
+    __tablename__ = "model_registry"
+
+    id = Column(
+        String,
+        primary_key=True,
+        index=True,
+        default=lambda: __import__("uuid").uuid4().hex,
+    )
+    run_id = Column(String, index=True)
+    label = Column(String, nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TeamNote(Base):
+    __tablename__ = "team_notes"
+
+    id = Column(
+        String,
+        primary_key=True,
+        index=True,
+        default=lambda: __import__("uuid").uuid4().hex,
+    )
+    entity_type = Column(String, nullable=True)
+    entity_id = Column(String, index=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -191,6 +227,21 @@ def _run_migrations():
             frequency_days  TEXT,
             created_at      DATETIME,
             updated_at      DATETIME
+        )""",
+        """CREATE TABLE IF NOT EXISTS model_registry (
+            id              TEXT PRIMARY KEY,
+            run_id          TEXT,
+            label           TEXT,
+            note            TEXT,
+            created_at      DATETIME,
+            updated_at      DATETIME
+        )""",
+        """CREATE TABLE IF NOT EXISTS team_notes (
+            id              TEXT PRIMARY KEY,
+            entity_type     TEXT,
+            entity_id       TEXT,
+            note            TEXT,
+            created_at      DATETIME
         )""",
     ]
 

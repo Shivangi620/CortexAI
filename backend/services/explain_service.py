@@ -316,3 +316,143 @@ def get_threshold_tuning(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]
         return {"best_threshold": best, "thresholds": rows}
     except Exception as e:
         return {"error": str(e)}
+
+
+def generate_counterfactual(
+    job_id: str,
+    results: Dict[str, Any],
+    features: Dict[str, Any],
+) -> Dict[str, Any]:
+    import joblib
+    from infra.database import DatasetModel, JobModel, get_db
+    from infra.storage import resolve_model_path
+    from core.file_loader import load_dataframe
+
+    if not results.get("is_classification"):
+        return {"error": "Counterfactuals are currently available for classification models."}
+
+    model_path = resolve_model_path(job_id) or results.get("model_path")
+    if not model_path or not os.path.exists(model_path):
+        return {"error": "Model file not found"}
+
+    try:
+        pipeline = joblib.load(model_path)
+    except Exception as e:
+        return {"error": f"Failed to load model: {e}"}
+
+    feature_names = results.get("feature_names") or []
+    try:
+        with get_db() as db:
+            job = db.query(JobModel).filter(JobModel.id == job_id).first()
+            dataset = db.query(DatasetModel).filter(DatasetModel.id == job.dataset_id).first() if job else None
+            df = load_dataframe(filepath=dataset.file_path) if dataset and dataset.file_path else None
+    except Exception as e:
+        return {"error": f"Failed to load dataset context: {e}"}
+
+    if df is None or df.empty:
+        return {"error": "Training dataset not available for counterfactual analysis."}
+
+    row = {name: features.get(name) for name in feature_names if name in features}
+    missing = [name for name in feature_names if name not in row]
+    if missing:
+        return {"error": f"Missing features: {missing[:8]}"}
+
+    input_df = pd.DataFrame([row])
+    try:
+        original_pred = pipeline.predict(input_df)[0]
+        if not hasattr(pipeline, "predict_proba"):
+            return {"error": "Counterfactuals require a probability-capable classifier."}
+        original_conf = float(np.max(pipeline.predict_proba(input_df)[0]))
+    except Exception as e:
+        return {"error": f"Could not score input row: {e}"}
+
+    try:
+        local = explain_local(job_id, results, row)
+        contributions = local.get("feature_contributions") or {}
+    except Exception:
+        contributions = {}
+
+    ranked_features = sorted(
+        feature_names,
+        key=lambda name: abs(float(contributions.get(name, 0) or 0)),
+        reverse=True,
+    )
+
+    candidates = []
+    for feature in ranked_features[:8]:
+        if feature not in df.columns:
+            continue
+        series = df[feature]
+        current_val = row.get(feature)
+        if pd.api.types.is_numeric_dtype(series):
+            clean = pd.to_numeric(series, errors="coerce").dropna()
+            if clean.empty:
+                continue
+            targets = [clean.median(), clean.quantile(0.25), clean.quantile(0.75)]
+            for target_val in targets:
+                trial = dict(row)
+                trial[feature] = float(target_val)
+                trial_df = pd.DataFrame([trial])
+                try:
+                    pred = pipeline.predict(trial_df)[0]
+                    conf = float(np.max(pipeline.predict_proba(trial_df)[0]))
+                except Exception:
+                    continue
+                if pred != original_pred:
+                    candidates.append(
+                        {
+                            "feature": feature,
+                            "from": current_val,
+                            "to": round(float(target_val), 6),
+                            "changed_fields": 1,
+                            "new_prediction": str(pred),
+                            "new_confidence_pct": round(conf * 100, 1),
+                            "confidence_delta_pct": round((conf - original_conf) * 100, 1),
+                        }
+                    )
+        else:
+            top_values = series.astype(str).value_counts(dropna=True).head(3).index.tolist()
+            for target_val in top_values:
+                if str(current_val) == target_val:
+                    continue
+                trial = dict(row)
+                trial[feature] = target_val
+                trial_df = pd.DataFrame([trial])
+                try:
+                    pred = pipeline.predict(trial_df)[0]
+                    conf = float(np.max(pipeline.predict_proba(trial_df)[0]))
+                except Exception:
+                    continue
+                if pred != original_pred:
+                    candidates.append(
+                        {
+                            "feature": feature,
+                            "from": current_val,
+                            "to": target_val,
+                            "changed_fields": 1,
+                            "new_prediction": str(pred),
+                            "new_confidence_pct": round(conf * 100, 1),
+                            "confidence_delta_pct": round((conf - original_conf) * 100, 1),
+                        }
+                    )
+
+    if not candidates:
+        return {
+            "prediction": str(original_pred),
+            "confidence_pct": round(original_conf * 100, 1),
+            "suggestions": [],
+            "message": "No one-step counterfactual flip was found from the top influential features.",
+        }
+
+    candidates.sort(
+        key=lambda item: (
+            item.get("changed_fields", 99),
+            -item.get("new_confidence_pct", 0),
+        )
+    )
+    return {
+        "prediction": str(original_pred),
+        "confidence_pct": round(original_conf * 100, 1),
+        "suggestions": candidates[:5],
+        "message": "These are the smallest single-feature changes that flipped the prediction in the local search.",
+    }

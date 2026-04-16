@@ -1,24 +1,17 @@
-import os
-
 import pandas as pd
 import requests
 import streamlit as st
+from ui_shell import (
+    ensure_session_state,
+    load_css,
+    render_page_shell,
+    render_section_intro,
+    render_workspace_banner,
+)
 
 API_URL = "http://localhost:8000/api"
 
 st.set_page_config(page_title="Drift Monitor", page_icon="📉", layout="wide")
-
-
-def load_css():
-    css_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "style.css",
-    )
-    try:
-        with open(css_path) as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except Exception:
-        pass
 
 
 def get_json(path: str, timeout: int = 20):
@@ -32,14 +25,29 @@ def get_json(path: str, timeout: int = 20):
 
 
 load_css()
-st.markdown('<h2 class="gradient-text">📉 Model Drift Monitor</h2>', unsafe_allow_html=True)
-st.markdown("Upload newer data to detect shift, inspect drift history, and retrain from the drifted batch in one step.")
+ensure_session_state()
 
 if not st.session_state.get("job_id"):
     st.info("👈 Train a model on the Home page first.")
     st.stop()
 
 job_id = st.session_state["job_id"]
+render_page_shell(
+    title="Drift Monitor",
+    eyebrow="Production Stability",
+    description="Check live data against the saved training baseline, record drift history, and trigger retraining without rebuilding the workflow manually.",
+    stats=[
+        ("Run", job_id[:8]),
+        ("Dataset", (st.session_state.get("dataset_id") or "—")[:8] if st.session_state.get("dataset_id") else "—"),
+    ],
+    accent="analysis",
+)
+render_workspace_banner()
+render_section_intro(
+    "Shift Detection",
+    "This page pairs detection, cadence management, history, and retraining so drift handling stays operational instead of fragmented.",
+    "Upload a fresh batch for analysis, save review cadence, then promote drifted data into a retraining job when needed.",
+)
 
 schedule_payload = get_json(f"/drift/{job_id}/schedule")
 
@@ -49,7 +57,7 @@ with upload_col:
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.markdown("### 📂 Drift Analysis")
     drift_file = st.file_uploader("Upload CSV for drift analysis", type=["csv"], key="drift_monitor_file")
-    if drift_file and st.button("🔍 Run Drift Analysis", type="primary", use_container_width=True):
+    if drift_file and st.button("🔍 Run Drift Analysis", type="primary", width="stretch"):
         with st.spinner("Analysing feature distributions..."):
             try:
                 resp = requests.post(
@@ -66,7 +74,7 @@ with retrain_col:
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.markdown("### 🔁 One-Click Retrain")
     retrain_file = st.file_uploader("Upload drifted CSV to retrain", type=["csv"], key="drift_retrain_file")
-    if retrain_file and st.button("🚀 Retrain On Drifted Dataset", use_container_width=True):
+    if retrain_file and st.button("🚀 Retrain On Drifted Dataset", width="stretch"):
         with st.spinner("Creating dataset version and starting training..."):
             try:
                 resp = requests.post(
@@ -159,7 +167,7 @@ if not schedule_payload.get("error"):
         cad3.caption(f"Next due: {schedule_payload.get('next_due_at') or 'after first check'}")
 else:
     cad3.caption("This saves the preferred review cadence for this job and pairs with the drift history below.")
-if st.button("💾 Save Drift Cadence", use_container_width=True):
+if st.button("💾 Save Drift Cadence", width="stretch"):
     try:
         res = requests.post(
             f"{API_URL}/drift/{job_id}/schedule",

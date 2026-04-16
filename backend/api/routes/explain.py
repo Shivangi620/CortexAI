@@ -119,3 +119,34 @@ def threshold_report(job_id: str):
 
     from services.explain_service import get_threshold_tuning
     return get_threshold_tuning(job_id, results)
+
+
+@router.post("/counterfactual/{job_id}")
+def counterfactual(job_id: str, req: ExplainRequest):
+    with get_db() as db:
+        job = db.query(JobModel).filter(JobModel.id == job_id).first()
+        if not job or not job.results_json:
+            return {"error": "Job not completed"}
+        try:
+            results = normalize_results(json.loads(job.results_json))
+        except Exception:
+            results = {}
+
+    from services.explain_service import generate_counterfactual
+    return generate_counterfactual(job_id, results, req.features)
+
+
+@router.get("/trust/{job_id}")
+def trust_heatmap(job_id: str):
+    with get_db() as db:
+        job = db.query(JobModel).filter(JobModel.id == job_id).first()
+        if not job or not job.results_json:
+            return {"error": "Job not completed"}
+        dataset_id = job.dataset_id
+        try:
+            results = normalize_results(json.loads(job.results_json))
+        except Exception:
+            results = {}
+
+    from services.studio_service import build_trust_heatmap
+    return build_trust_heatmap(dataset_id, results)

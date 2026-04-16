@@ -2,12 +2,9 @@
 
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)
-![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat&logo=streamlit)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-AutoML Studio is a high-performance, intelligent end-to-end automated machine learning platform. It empowers anyone to upload tabular datasets, leverage "Dataset DNA" heuristics to automatically preprocess data, logically isolate the most appropriate algorithms, and train competitive ML models locally—all wrapped in a beautifully styled, dynamic user interface.
-
-It features a twin-architecture: A **FastAPI** theoretical engine handling heavy computational pipelines and data logic, coordinated by a rich **Streamlit** user experience interface.
+AutoML Studio is a high-performance, intelligent end-to-end automated machine learning platform. It empowers anyone to upload tabular datasets, leverage "Dataset DNA" heuristics to automatically preprocess data, logically isolate the most appropriate algorithms, and train competitive ML models locally through a standalone **HTML/CSS/JavaScript** frontend served directly by **FastAPI**.
 
 ![AutoML Studio Dashboard](./assets/dashboard_preview.png)
 *(Placeholder: Add a screenshot or GIF of the dashboard here)*
@@ -29,13 +26,11 @@ It features a twin-architecture: A **FastAPI** theoretical engine handling heavy
 ```text
 AutoML Studio
 ├── frontend/
-│   ├── app.py                # Main Streamlit config and entrypoint
-│   ├── style.css             # Premium custom CSS properties (Glassmorphism/Google Fonts)
-│   └── pages/
-│       ├── 1_Home.py                    # Ingestion & Mode Configuration
-│       ├── 2_DNA.py                     # Dataset Intelligence Profiling
-│       ├── 3_Training_and_Results.py    # Live Orchestrator, Leaderboards, & Export
-│       └── 4_Failure_Analyzer.py        # Edge Case testing and AI Insight Chat
+│   └── web/
+│       ├── index.html         # Standalone upload and training control surface
+│       ├── results.html       # Redesigned Results Console
+│       ├── styles.css         # Shared futuristic visual system
+│       └── app.js             # Frontend logic for upload, train, inspect, predict, export
 ├── backend/
 │   ├── main.py               # FastAPI router handling multi-part ingestion & background tasks
 │   └── core/
@@ -69,28 +64,25 @@ pip install -r requirements.txt
 ```
 
 ### 3. Quick Start (Recommended)
-You can launch both the FastAPI backend and Streamlit frontend concurrently using the provided shell script:
+You can launch the FastAPI backend, worker stack, and built-in web frontend using the provided shell script:
 ```bash
 bash run.sh
 ```
 
 ### 4. Manual Launch
-If you prefer to run them separately:
+If you prefer to run it manually:
 1. **Start the backend:**
 ```bash
 cd backend
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
-2. **Start the frontend:** (in a new terminal, with the virtual environment activated)
-```bash
-streamlit run frontend/app.py
-```
+2. **Open the frontend:** `http://localhost:8000`
 
 ---
 
 ## 📖 How to Use
 
-Once the application is live on `http://localhost:8501`, follow these steps:
+Once the application is live on `http://localhost:8000`, follow these steps:
 
 1. **Upload Dataset**: Navigate to the **Home** tab and drag-and-drop your dataset (CSV, JSON, Excel, or Parquet).
 2. **Review DNA**: Click on the **DNA** tab to review the automatic imputation plan and exploratory data analysis.

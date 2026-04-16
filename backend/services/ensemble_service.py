@@ -76,6 +76,7 @@ def build_ensemble(
                     "model": name,
                     "score": results.get("score"),
                     "metric_name": results.get("metric_name"),
+                    "results": results,
                 })
 
                 if is_clf is None:
@@ -121,28 +122,41 @@ def build_ensemble(
     estimators = unique_estimators
 
     try:
+        numeric_scores = []
+        for row in individual_scores:
+            try:
+                numeric_scores.append(max(float(row.get("score") or 0.0), 0.01))
+            except Exception:
+                numeric_scores.append(1.0)
+        weight_sum = sum(numeric_scores) or len(numeric_scores) or 1
+        normalized_weights = [round(score / weight_sum, 4) for score in numeric_scores]
+
         if strategy == "stacking":
             from sklearn.ensemble import StackingClassifier, StackingRegressor
 
             if is_clf:
                 ensemble = StackingClassifier(
                     estimators=estimators,
-                    final_estimator=LogisticRegression(max_iter=500),
+                    final_estimator=LogisticRegression(max_iter=1000),
                     cv=3,
-                    passthrough=False,
+                    passthrough=True,
                 )
             else:
                 ensemble = StackingRegressor(
                     estimators=estimators,
                     final_estimator=Ridge(),
                     cv=3,
-                    passthrough=False,
+                    passthrough=True,
                 )
         else:
             if is_clf:
-                ensemble = VotingClassifier(estimators=estimators, voting="soft")
+                ensemble = VotingClassifier(
+                    estimators=estimators,
+                    voting="soft",
+                    weights=normalized_weights,
+                )
             else:
-                ensemble = VotingRegressor(estimators=estimators)
+                ensemble = VotingRegressor(estimators=estimators, weights=normalized_weights)
 
     except Exception as e:
         return {"error": f"Failed to build ensemble: {e}"}
@@ -236,6 +250,7 @@ def build_ensemble(
             "source": "ensemble",
             "strategy": strategy,
             "base_jobs": job_ids,
+            "weights": normalized_weights,
         },
     }
 

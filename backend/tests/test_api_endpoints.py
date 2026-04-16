@@ -1,7 +1,7 @@
 import json
 import math
 
-from infra.database import JobModel
+from infra.database import ExperimentRun, JobModel
 from tests.conftest import TestingSessionLocal
 
 
@@ -58,3 +58,36 @@ def test_status_endpoint_sanitizes_nan_payloads(client):
     assert body["results"]["score"] == 0.0
     assert body["results"]["leaderboard"] == [{"model": "LGBM", "score": None}]
     assert body["insights"] == {"confidence": None}
+
+
+def test_experiments_endpoint_sanitizes_nan_payloads(client):
+    with TestingSessionLocal() as db:
+        db.add(
+            ExperimentRun(
+                id="exp-with-nan",
+                job_id="job-exp-nan",
+                dataset_id="ds-1",
+                model_name="LGBM",
+                metric_name="Accuracy",
+                score=math.nan,
+                task_type="classification",
+                mode="Balanced",
+                goal="Performance",
+                feature_count=5,
+                row_count=100,
+                hyperparams_json='{"depth": 8, "lr": NaN}',
+                metrics_json='{"precision": NaN, "recall": 88.1}',
+                leaderboard_json='[{"model":"LGBM","score":NaN}]',
+            )
+        )
+        db.commit()
+
+    response = client.get("/api/experiments")
+
+    assert response.status_code == 200
+    rows = response.json()
+    target = next(row for row in rows if row["id"] == "exp-with-nan")
+    assert target["score"] is None
+    assert target["hyperparams"] == {"depth": 8, "lr": None}
+    assert target["metrics"] == {"precision": None, "recall": 88.1}
+    assert target["leaderboard"] == [{"model": "LGBM", "score": None}]

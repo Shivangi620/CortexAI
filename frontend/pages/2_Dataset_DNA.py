@@ -1,26 +1,22 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
 import requests
+from ui_shell import (
+    ensure_session_state,
+    load_css,
+    render_page_shell,
+    render_section_intro,
+    render_workspace_banner,
+)
 
 API_URL = "http://localhost:8000/api"
 
 st.set_page_config(page_title="Dataset DNA", page_icon="🧬", layout="wide")
 
-
-def load_css():
-    css_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "style.css")
-    try:
-        with open(css_path) as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except Exception:
-        pass
-
-
 load_css()
-
-st.markdown('<h2 class="gradient-text">🧬 Dataset Intelligence Panel</h2>', unsafe_allow_html=True)
+ensure_session_state()
+st.session_state.setdefault("dna_merge_preview", {})
 
 if not st.session_state.get('profile'):
     dataset_id = st.session_state.get('dataset_id')
@@ -45,6 +41,49 @@ if not st.session_state.get('profile'):
         st.stop()
 
 profile = st.session_state['profile']
+render_page_shell(
+    title="Dataset DNA",
+    eyebrow="Data Profiling",
+    description="Inspect structure, health, timeline, leakage risks, and target suggestions before committing more compute to training.",
+    stats=[
+        ("Rows", profile.get("rows", 0)),
+        ("Columns", profile.get("cols", 0)),
+        ("Missing %", f"{profile.get('missing_pct', 0)}%"),
+        ("Target Guess", profile.get("suggested_target", "—")),
+    ],
+    accent="analysis",
+)
+render_workspace_banner()
+render_section_intro(
+    "Profile Readout",
+    "A single place to evaluate dataset quality and modeling readiness.",
+    "The panel below keeps the health score, schema mix, timeline changes, column statistics, and leakage report aligned in one review flow.",
+)
+
+st.session_state.setdefault("repair_preview", {})
+
+st.markdown(
+    f"""
+    <div class="scan-strip">
+        <div class="scan-card">
+            <span class="scan-card__label">Target Signal</span>
+            <strong class="scan-card__value">{profile.get("suggested_target", "—")}</strong>
+            <div class="scan-card__meta">Recommended prediction anchor</div>
+        </div>
+        <div class="scan-card">
+            <span class="scan-card__label">Schema Mix</span>
+            <strong class="scan-card__value">{len(profile.get("num_cols", []))}N / {len(profile.get("cat_cols", []))}C</strong>
+            <div class="scan-card__meta">Numerical and categorical split</div>
+        </div>
+        <div class="scan-card">
+            <span class="scan-card__label">Data Mass</span>
+            <strong class="scan-card__value">{profile.get("size", "Unknown")}</strong>
+            <div class="scan-card__meta">Estimated storage footprint</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ── Summary Metrics ──────────────────────────────────────────────────────
 st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
@@ -67,19 +106,18 @@ st.markdown("---")
 health = profile.get("health", {})
 if health:
     h_score = health.get("score", 0)
-    h_color = health.get("color", "#fff")
     h_grade = health.get("grade", "N/A")
     
     st.markdown(f"""
-    <div style="background: rgba(0,0,0,0.1); padding: 20px; border-radius: 15px; border: 1px solid {h_color}44; margin-bottom: 25px;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div>
-                <h3 style="margin:0; color: {h_color};">Dataset Health Score: {h_score}/100</h3>
-                <p style="margin:5px 0 0 0; opacity: 0.8;">{health.get('summary', '')}</p>
-            </div>
-            <div style="font-size: 42px; font-weight: bold; color: {h_color}; background: {h_color}22; padding: 10px 25px; border-radius: 10px;">
-                {h_grade}
-            </div>
+    <div class="health-card">
+        <div>
+            <span class="health-card__eyebrow">Health Matrix</span>
+            <div class="health-card__title">Dataset Health Score: {h_score}/100</div>
+            <div class="health-card__copy">{health.get('summary', '')}</div>
+            <div class="health-card__meta">Stability, completeness, and modeling readiness</div>
+        </div>
+        <div class="health-card__grade">
+            {h_grade}
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -108,6 +146,57 @@ with c6:
 
 st.markdown('</div>', unsafe_allow_html=True)
 
+st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+st.markdown("### 🧹 Data Repair Assistant")
+st.caption("Preview or apply automated cleaning before training. This is the right place to review repair decisions at the dataset level.")
+
+repair_target = profile.get("suggested_target") or (profile.get("columns") or [None])[-1]
+repair_left, repair_right = st.columns([1, 1])
+with repair_left:
+    if st.button("🩺 Preview Data Repair", width="stretch"):
+        try:
+            repair_res = requests.post(
+                f"{API_URL}/repair-preview",
+                json={"dataset_id": st.session_state["dataset_id"], "target_column": repair_target},
+                timeout=60,
+            )
+            st.session_state["repair_preview"] = repair_res.json()
+        except Exception as e:
+            st.session_state["repair_preview"] = {"error": str(e)}
+with repair_right:
+    if st.button("🛠 Apply Data Repair", width="stretch"):
+        try:
+            repair_res = requests.post(
+                f"{API_URL}/repair-apply",
+                json={"dataset_id": st.session_state["dataset_id"], "target_column": repair_target},
+                timeout=60,
+            )
+            repair_data = repair_res.json()
+            if repair_res.status_code == 200 and not repair_data.get("error"):
+                st.session_state["dataset_id"] = repair_data["dataset_id"]
+                st.session_state["profile"] = repair_data["profile"]
+                st.success("Repaired dataset loaded into workspace.")
+                st.rerun()
+            else:
+                st.error(repair_data.get("error", "Repair failed."))
+        except Exception as e:
+            st.error(f"Repair failed: {e}")
+
+repair_preview = st.session_state.get("repair_preview") or {}
+if repair_preview:
+    if repair_preview.get("error"):
+        st.error(repair_preview["error"])
+    else:
+        summary_cols = st.columns(4)
+        summary_cols[0].metric("Rows Before", repair_preview.get("before_rows", 0))
+        summary_cols[1].metric("Rows After", repair_preview.get("after_rows", 0))
+        summary_cols[2].metric("Cols Before", repair_preview.get("before_columns", 0))
+        summary_cols[3].metric("Cols After", repair_preview.get("after_columns", 0))
+        for item in repair_preview.get("logs", []):
+            st.caption(f"• {item}")
+        st.dataframe(repair_preview.get("preview_records", []), width="stretch", hide_index=True)
+st.markdown('</div>', unsafe_allow_html=True)
+
 
 dataset_id = st.session_state.get("dataset_id")
 
@@ -132,6 +221,36 @@ if dataset_id:
             d1.metric("Row Delta", diff.get("rows", 0))
             d2.metric("Column Delta", diff.get("cols", 0))
             d3.metric("Missing % Delta", diff.get("missing_pct", 0))
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+    st.markdown("### 🕸 Dataset Lineage Graph")
+    try:
+        lineage_graph_res = requests.get(f"{API_URL}/dataset/{dataset_id}/lineage-graph", timeout=15)
+        lineage_graph = lineage_graph_res.json() if lineage_graph_res.status_code == 200 else {"error": "Unable to load lineage graph"}
+    except Exception as e:
+        lineage_graph = {"error": str(e)}
+
+    if lineage_graph.get("error"):
+        st.info("Lineage graph is not available for this dataset yet.")
+    else:
+        nodes = lineage_graph.get("nodes", [])
+        edges = lineage_graph.get("edges", [])
+        if nodes:
+            for idx, node in enumerate(nodes):
+                label = f"{idx + 1}. {node.get('label', 'Dataset')}"
+                st.caption(
+                    f"{label} · {node.get('rows', '—')} rows · {node.get('cols', '—')} cols · "
+                    f"missing {node.get('missing_pct', '—')}%"
+                )
+            if edges:
+                st.code(
+                    "\n".join(
+                        f"{edge.get('source', '')[:8]} --> {edge.get('target', '')[:8]}  ({edge.get('label', 'derived')})"
+                        for edge in edges
+                    ),
+                    language="text",
+                )
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ── Per-Column Statistics ─────────────────────────────────────────────────
@@ -167,7 +286,7 @@ if column_stats:
 
     stats_df = pd.DataFrame(rows_list).set_index("Column")
 
-    stats_df = stats_df.replace("", np.nan).infer_objects(copy=False)
+    stats_df = stats_df.mask(stats_df == "", np.nan).infer_objects(copy=False)
     
     for col in stats_df.columns:
         try:
@@ -262,4 +381,104 @@ if leakage:
 else:
     st.info("Click **Run Leakage Scan** above to check your dataset for common ML pitfalls.")
 
+st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+st.markdown("### 🧬 Dataset Merge Studio")
+st.caption("Use existing datasets from the workspace, preview key overlap, then create a merged dataset with join stats.")
+try:
+    dataset_catalog = requests.get(f"{API_URL}/datasets", timeout=10).json().get("datasets", [])
+except Exception:
+    dataset_catalog = []
+
+catalog_options = {
+    f"{(item.get('source_type') or 'dataset').replace('_', ' ').title()} · {item.get('rows', 0)} rows · {(item.get('id') or '')[:8]}": item
+    for item in dataset_catalog
+}
+if len(catalog_options) < 2:
+    st.info("At least two datasets are needed to use Merge Studio.")
+else:
+    ms_left, ms_right = st.columns(2)
+    left_label = ms_left.selectbox("Left Dataset", list(catalog_options.keys()), key="dna_merge_left")
+    right_label = ms_right.selectbox("Right Dataset", list(catalog_options.keys()), index=1 if len(catalog_options) > 1 else 0, key="dna_merge_right")
+    left_item = catalog_options[left_label]
+    right_item = catalog_options[right_label]
+    key_left_col, key_right_col, join_col = st.columns(3)
+    left_key = key_left_col.selectbox("Left Join Key", left_item.get("columns") or [], key="dna_left_key")
+    right_key = key_right_col.selectbox("Right Join Key", right_item.get("columns") or [], key="dna_right_key")
+    join_type = join_col.selectbox("Join Type", ["inner", "left", "right", "outer"], key="dna_join_type")
+    merge_signature = (left_item["id"], right_item["id"], left_key, right_key, join_type)
+    if st.session_state.get("dna_merge_signature") != merge_signature:
+        st.session_state["dna_merge_signature"] = merge_signature
+        st.session_state["dna_merge_preview"] = {}
+
+    if left_item["id"] == right_item["id"]:
+        st.warning("Choose two different datasets to merge.")
+
+    action_left, action_right = st.columns(2)
+    if action_left.button("Preview Join Stats", width="stretch"):
+        if left_item["id"] == right_item["id"]:
+            st.error("Pick two different datasets.")
+        else:
+            try:
+                preview_res = requests.post(
+                    f"{API_URL}/merge-studio/preview",
+                    json={
+                        "left_dataset_id": left_item["id"],
+                        "right_dataset_id": right_item["id"],
+                        "join_key_left": left_key,
+                        "join_key_right": right_key,
+                        "join_type": join_type,
+                    },
+                    timeout=60,
+                )
+                st.session_state["dna_merge_preview"] = preview_res.json()
+            except Exception as e:
+                st.session_state["dna_merge_preview"] = {"error": str(e)}
+
+    if action_right.button("Create Merged Dataset", width="stretch"):
+        if left_item["id"] == right_item["id"]:
+            st.error("Pick two different datasets.")
+        else:
+            try:
+                merge_res = requests.post(
+                    f"{API_URL}/merge-studio",
+                    json={
+                        "left_dataset_id": left_item["id"],
+                        "right_dataset_id": right_item["id"],
+                        "join_key_left": left_key,
+                        "join_key_right": right_key,
+                        "join_type": join_type,
+                    },
+                    timeout=120,
+                )
+                merge_data = merge_res.json()
+                if merge_res.status_code == 200 and not merge_data.get("error"):
+                    st.session_state["dataset_id"] = merge_data["dataset_id"]
+                    st.session_state["profile"] = merge_data["profile"]
+                    st.session_state["dna_merge_preview"] = {}
+                    st.success("Merged dataset loaded into the workspace.")
+                    st.rerun()
+                else:
+                    st.error(merge_data.get("error", "Merge failed."))
+            except Exception as e:
+                st.error(f"Merge failed: {e}")
+
+    merge_preview = st.session_state.get("dna_merge_preview") or {}
+    if merge_preview:
+        if merge_preview.get("error"):
+            st.error(merge_preview["error"])
+        else:
+            preview_cols = st.columns(5)
+            preview_cols[0].metric("Estimated Rows", merge_preview.get("estimated_rows", 0))
+            preview_cols[1].metric("Overlapping Keys", merge_preview.get("overlapping_keys", 0))
+            preview_cols[2].metric("Left Match %", f"{merge_preview.get('left_match_pct', 0)}%")
+            preview_cols[3].metric("Right Match %", f"{merge_preview.get('right_match_pct', 0)}%")
+            preview_cols[4].metric("Row Multiplier", merge_preview.get("estimated_row_multiplier", "—"))
+            st.caption(
+                f"Join-key duplicates: left {merge_preview.get('left_duplicate_keys', 0)} · "
+                f"right {merge_preview.get('right_duplicate_keys', 0)}"
+            )
+            if merge_preview.get("preview_records"):
+                st.dataframe(merge_preview["preview_records"], width="stretch", hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)

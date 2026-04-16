@@ -3,7 +3,11 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
 from sklearn.svm import SVC
 from xgboost import XGBClassifier, XGBRegressor
-from lightgbm import LGBMClassifier, LGBMRegressor
+try:
+    from lightgbm import LGBMClassifier, LGBMRegressor
+except Exception:
+    LGBMClassifier = None
+    LGBMRegressor = None
 
 from core.meta_learning import zero_shot_recommend
 
@@ -20,9 +24,9 @@ class ModelSelector:
                 "max_models": 3,
                 "allow_svm": False,
                 "preferred_order": (
-                    ["Logistic Regression", "Random Forest", "LightGBM"]
+                    [name for name in ["Logistic Regression", "Random Forest", "LightGBM"] if name != "LightGBM" or LGBMClassifier is not None]
                     if is_clf
-                    else ["Linear Regression", "Ridge", "LightGBM"]
+                    else [name for name in ["Linear Regression", "Ridge", "LightGBM"] if name != "LightGBM" or LGBMRegressor is not None]
                 ),
             }
 
@@ -32,9 +36,9 @@ class ModelSelector:
                 "max_models": 4 if is_clf else 5,
                 "allow_svm": bool(is_clf and rows < 5000),
                 "preferred_order": (
-                    ["Logistic Regression", "Random Forest", "LightGBM", "XGBoost"]
+                    [name for name in ["Logistic Regression", "Random Forest", "LightGBM", "XGBoost"] if name != "LightGBM" or LGBMClassifier is not None]
                     if is_clf
-                    else ["Linear Regression", "Ridge", "Random Forest", "LightGBM", "XGBoost"]
+                    else [name for name in ["Linear Regression", "Ridge", "Random Forest", "LightGBM", "XGBoost"] if name != "LightGBM" or LGBMRegressor is not None]
                 ),
             }
 
@@ -86,8 +90,9 @@ class ModelSelector:
                 LogisticRegression(max_iter=1000) if is_clf else LinearRegression(),
             "Random Forest": RandomForestClassifier() if is_clf else RandomForestRegressor(),
             "XGBoost": XGBClassifier(eval_metric='logloss') if is_clf else XGBRegressor(),
-            "LightGBM": LGBMClassifier(verbose=-1) if is_clf else LGBMRegressor(verbose=-1),
         }
+        if LGBMClassifier is not None and LGBMRegressor is not None:
+            pool["LightGBM"] = LGBMClassifier(verbose=-1) if is_clf else LGBMRegressor(verbose=-1)
         
         # Regression specific
         if not is_clf:

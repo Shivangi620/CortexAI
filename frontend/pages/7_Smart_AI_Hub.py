@@ -1,33 +1,43 @@
-import os
-
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from ui_shell import (
+    ensure_session_state,
+    load_css,
+    render_page_shell,
+    render_section_intro,
+    render_workspace_banner,
+)
 
 API_URL = "http://localhost:8000/api"
 
 st.set_page_config(page_title="Smart AI Hub - AutoML Studio", page_icon="🤖", layout="wide")
 
-
-def load_css():
-    css_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "style.css",
-    )
-    try:
-        with open(css_path) as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except Exception:
-        pass
-
-
 load_css()
-st.markdown('<h2 class="gradient-text">🤖 Smart AI Intelligence Hub</h2>', unsafe_allow_html=True)
+ensure_session_state()
 
 dataset_id = st.session_state.get("dataset_id")
 job_id = st.session_state.get("job_id")
 profile = st.session_state.get("profile", {})
+render_page_shell(
+    title="Smart AI Hub",
+    eyebrow="Advanced Utilities",
+    description="Use ensemble building, what-if simulation, synthetic expansion, and natural language helpers to extend the core training workflow.",
+    stats=[
+        ("Dataset", dataset_id[:8] if dataset_id else "No dataset"),
+        ("Run", job_id[:8] if job_id else "No run"),
+        ("Features", len(profile.get("columns", []) or [])),
+        ("Numeric", len(profile.get("num_cols", []) or [])),
+    ],
+    accent="results",
+)
+render_workspace_banner()
+render_section_intro(
+    "Applied AI Tools",
+    "These utilities sit on top of the main AutoML flow and reuse the same workspace state.",
+    "The redesign keeps each capability in a dedicated tab while preserving the underlying API behavior.",
+)
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "🧩 Ensemble Builder",
@@ -146,7 +156,7 @@ with tab2:
                     except ValueError:
                         base_features[feature] = raw_value
 
-            if st.button("🔮 Run Simulation", use_container_width=True):
+            if st.button("🔮 Run Simulation", width="stretch"):
                 if not sweep_values:
                     st.warning("Choose at least one sweep value.")
                 else:
@@ -249,14 +259,14 @@ with tab3:
 
             btn_col1, btn_col2 = st.columns(2)
             with btn_col1:
-                if st.button("🧪 Retest With Augmented Dataset", type="primary", use_container_width=True):
+                if st.button("🧪 Retest With Augmented Dataset", type="primary", width="stretch"):
                     st.session_state["dataset_id"] = syn["new_dataset_id"]
                     if syn.get("profile"):
                         st.session_state["profile"] = syn["profile"]
                     st.success("Augmented dataset loaded into the workspace.")
                     st.switch_page("pages/1_Home.py")
             with btn_col2:
-                if st.button("🧬 Inspect Augmented DNA", use_container_width=True):
+                if st.button("🧬 Inspect Augmented DNA", width="stretch"):
                     st.session_state["dataset_id"] = syn["new_dataset_id"]
                     if syn.get("profile"):
                         st.session_state["profile"] = syn["profile"]

@@ -1,25 +1,21 @@
 import streamlit as st
 import requests
 import time
-import os
 from ui_utils import format_metric_value
+from ui_shell import (
+    ensure_session_state,
+    load_css,
+    render_page_shell,
+    render_section_intro,
+    render_workspace_banner,
+)
 
 API_URL = "http://localhost:8000/api"
 
 st.set_page_config(page_title="Live Training & Results", page_icon="⚡", layout="wide")
 
-
-def load_css():
-    css_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "style.css")
-    try:
-        with open(css_path) as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except Exception:
-        pass
-
-
 load_css()
-st.markdown('<h2 class="gradient-text">⚡ Live Training + Auto Report</h2>', unsafe_allow_html=True)
+ensure_session_state()
 
 if not st.session_state.get('job_id'):
     st.info("👈 Start a training job from the Home page first.")
@@ -39,6 +35,24 @@ if job_data.get("error") and job_data.get("status") != "failed":
     st.error(f"Backend status error: {job_data.get('error')}")
 
 status = job_data.get('status', 'unknown')
+render_page_shell(
+    title="Training Lab",
+    eyebrow="Live Execution",
+    description="Monitor the active run, watch score checkpoints, and move into the results workspace as soon as the winning model lands.",
+    stats=[
+        ("Run", job_id[:8]),
+        ("Status", status.title()),
+        ("History Events", len(job_data.get("history", []) or [])),
+        ("Reasoning Notes", len(job_data.get("reasoning", []) or [])),
+    ],
+    accent="lab",
+)
+render_workspace_banner()
+render_section_intro(
+    "Run Monitor",
+    "The lab keeps the training log and score trajectory visible while the backend works.",
+    "When the run completes, this page turns into a launchpad straight into the deeper results console.",
+)
 
 # ── Live polling (replaces asyncio.run — Streamlit-safe) ──────────────────────
 if status == "training":
@@ -109,7 +123,7 @@ elif status == 'completed':
     st.markdown("---")
     st.write("Training is finished. Deep insights, SHAP values, and the prediction playground are now available in the Results Console.")
     
-    if st.button("🔍 View Deep Analysis in Results Console", type="primary", use_container_width=True):
+    if st.button("🔍 View Deep Analysis in Results Console", type="primary", width="stretch"):
         st.switch_page("pages/4_Results_Console.py")
     
     st.markdown('</div>', unsafe_allow_html=True)

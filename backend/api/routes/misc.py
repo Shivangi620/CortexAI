@@ -8,6 +8,7 @@ import os
 
 from infra.database import get_db, DatasetModel, JobModel
 from infra.result_contract import normalize_results
+from services.studio_service import narrate_experiment, synthetic_data_judge
 
 router = APIRouter(prefix="/api", tags=["misc"])
 
@@ -127,6 +128,7 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
     from uuid import uuid4
     from core.synthetic import generate_synthetic, suggest_expansion_size
     from core.data_profiler import profile_dataset
+    from core.file_loader import load_dataframe
 
     with get_db() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
@@ -141,14 +143,22 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
             profile = {}
 
     try:
-        df = pd.read_csv(file_path)
+        df = load_dataframe(filepath=file_path)
         if df is None or df.empty:
             return {"error": "Dataset is empty or unreadable"}
     except Exception as e:
         return {"error": f"Failed to load dataset: {e}"}
 
     original_rows = len(df)
-    n_new = n_rows or suggest_expansion_size(original_rows)
+    recommended_n = suggest_expansion_size(original_rows)
+    requested_n = int(n_rows or recommended_n)
+    n_new = max(1, requested_n)
+    adjustment_note = None
+    if requested_n > recommended_n * 4:
+        adjustment_note = (
+            f"Requested {requested_n} rows. This is much larger than the recommended "
+            f"{recommended_n} rows, so validate the augmented dataset carefully before retraining."
+        )
 
     expanded_df, synthetic_only = generate_synthetic(df, n_new)
 
@@ -204,13 +214,22 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
     return {
         "new_dataset_id": new_id,
         "original_rows": original_rows,
+        "recommended_rows": recommended_n,
+        "requested_rows": requested_n,
         "synthetic_rows_added": n_new,
         "total_rows": len(expanded_df),
+        "augmentation_ratio": round(n_new / max(original_rows, 1), 2),
+        "adjustment_note": adjustment_note,
         "original_profile": profile,
         "profile": new_profile,
         "profile_diff": profile_diff,
         "preview": json.loads(synthetic_only.head(5).to_json(orient="records")),
     }
+
+
+@router.get("/synthetic/judge/{dataset_id}")
+def synthetic_judge(dataset_id: str):
+    return synthetic_data_judge(dataset_id)
 
 
 # ── Playground Quick Train ─────────────────────────────────────────────────────
@@ -277,3 +296,38 @@ def cross_dataset_insights(dataset_id: str):
 
     from core.meta_learning import get_cross_dataset_insights
     return get_cross_dataset_insights(profile)
+
+
+@router.get("/meta/status")
+def meta_status():
+    from core.meta_learning import meta_engine
+
+    return {
+        "is_trained": bool(meta_engine.is_trained),
+        "min_records": meta_engine.min_records,
+        "validation_error": round(float(meta_engine.val_error), 4),
+        "backend": "lightgbm" if meta_engine.model is not None else "heuristics",
+    }
+
+
+@router.get("/narrate/{job_id}")
+def narrate_job(job_id: str):
+    with get_db() as db:
+        job = db.query(JobModel).filter(JobModel.id == job_id).first()
+        if not job:
+            return {"error": "Job not found"}
+        dataset_id = job.dataset_id
+        story = job.story
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+
+        try:
+            profile = json.loads(dataset.profile_json) if dataset and dataset.profile_json else {}
+        except Exception:
+            profile = {}
+
+        try:
+            results = normalize_results(json.loads(job.results_json)) if job.results_json else {}
+        except Exception:
+            results = {}
+
+    return narrate_experiment(profile, results, story)

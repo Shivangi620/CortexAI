@@ -2,7 +2,11 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import accuracy_score, r2_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error
 from sklearn.model_selection import train_test_split
-from lightgbm import LGBMClassifier, LGBMRegressor
+try:
+    from lightgbm import LGBMClassifier, LGBMRegressor
+    LGBM_TYPES = (LGBMClassifier, LGBMRegressor)
+except Exception:
+    LGBM_TYPES = tuple()
 
 def _resolve_scoring(eval_metric: str, is_clf: bool) -> str:
     metric = (eval_metric or "").strip().lower()
@@ -28,14 +32,27 @@ def stability_check(model, X, y, is_clf, seeds=(42, 123, 999)):
     scores = []
     precs, recs, f1s = [], [], []
     mses, maes = [], []
+    y_series = pd.Series(y)
+    unique_classes = int(y_series.nunique()) if is_clf else 0
     for seed in seeds:
         if hasattr(model, 'random_state'):
             try:
                 model.set_params(random_state=seed)
             except Exception:
                 pass
-        X_tr, X_val, y_tr, y_val = train_test_split(X, y, test_size=0.2, random_state=seed)
-        if isinstance(model, (LGBMClassifier, LGBMRegressor)):
+        test_size = max(1, int(round(len(y_series) * 0.2)))
+        if len(y_series) <= 3:
+            test_size = 1
+        split_kwargs = {"test_size": test_size, "random_state": seed}
+        if is_clf and unique_classes > 1 and test_size >= unique_classes:
+            min_class_count = int(y_series.value_counts().min())
+            if min_class_count >= 2:
+                split_kwargs["stratify"] = y
+        try:
+            X_tr, X_val, y_tr, y_val = train_test_split(X, y, **split_kwargs)
+        except Exception:
+            X_tr, X_val, y_tr, y_val = train_test_split(X, y, test_size=test_size, random_state=seed)
+        if LGBM_TYPES and isinstance(model, LGBM_TYPES):
             X_tr_in = pd.DataFrame(X_tr)
             X_val_in = pd.DataFrame(X_val, columns=X_tr_in.columns)
         else:

@@ -135,6 +135,53 @@ def drift_history(job_id: str):
         return {"history": history}
 
 
+@router.get("/drift/{job_id}/feature-timeline")
+def drift_feature_timeline(job_id: str, feature: str | None = None):
+    with get_db() as db:
+        rows = (
+            db.query(DriftCheck)
+            .filter(DriftCheck.job_id == job_id)
+            .order_by(DriftCheck.created_at.asc())
+            .limit(100)
+            .all()
+        )
+
+    timeline = []
+    feature_set = set()
+    for row in rows:
+        try:
+            report = json.loads(row.report_json) if row.report_json else {}
+        except Exception:
+            report = {}
+
+        for item in report.get("feature_drift", []) or []:
+            feature_name = item.get("feature")
+            if not feature_name:
+                continue
+            feature_set.add(feature_name)
+            if feature and feature_name != feature:
+                continue
+            timeline.append(
+                {
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "uploaded_name": row.uploaded_name,
+                    "feature": feature_name,
+                    "psi": item.get("psi"),
+                    "ks_p_value": item.get("ks_p_value"),
+                    "severity": item.get("severity"),
+                    "drift_detected": item.get("drift_detected", False),
+                    "current_mean": item.get("current_mean"),
+                    "baseline_mean": item.get("baseline_mean"),
+                }
+            )
+
+    return {
+        "job_id": job_id,
+        "features": sorted(feature_set),
+        "timeline": timeline,
+    }
+
+
 @router.get("/drift/{job_id}/schedule")
 def get_drift_schedule(job_id: str):
     with get_db() as db:
