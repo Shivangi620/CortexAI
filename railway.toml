@@ -1,7 +1,14 @@
-[build]
-  builder = "dockerfile"
+# Backend service
+[[services]]
+  name = "backend"
+  source = { repo = "https://github.com/Bloated11/auto_ml" }
+  build = { builder = "dockerfile" }
+  deploy = { startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT --app-dir /app/backend", restartPolicyCondition = "on-failure" }
 
-[deploy]
-  startCommand = "bash ./start.sh"
-  restartPolicyCondition = "on-failure"
-  restartPolicyMaxRetries = 5
+# Frontend service
+[[services]]
+  name = "frontend"
+  source = { repo = "https://github.com/Bloated11/auto_ml" }
+  build = { builder = "dockerfile" }
+  deploy = { startCommand = "python -m streamlit run app.py --server.port $PORT --server.headless true --server.address 0.0.0.0", restartPolicyCondition = "on-failure" }
+  env = { BACKEND_URL = "https://backend-service-name.up.railway.app" }

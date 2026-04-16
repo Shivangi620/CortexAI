@@ -29,7 +29,7 @@ else
   echo "redis-server not installed; skipping local Redis startup."
 fi
 
-# Start backend
+# Start backend on internal port
 cd "$SCRIPT_DIR/backend"
 python -m uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 600 &
 BACKEND_PID=$!
@@ -43,16 +43,17 @@ for i in {1..20}; do
   sleep 1
 done
 
-# Start frontend
+# Start frontend on Railway's assigned port
 cd "$SCRIPT_DIR/frontend"
-python -m streamlit run app.py --server.port 8501 --server.headless true &
+PORT=${PORT:-8501}  # Use Railway's PORT env var, default to 8501
+python -m streamlit run app.py --server.port $PORT --server.headless true --server.address 0.0.0.0 &
 FRONTEND_PID=$!
 
-echo "Frontend starting on port 8501..."
+echo "Frontend starting on port $PORT..."
 
 echo "AutoML Studio services are now running."
-echo "Backend: http://127.0.0.1:8000"
-echo "Frontend: http://127.0.0.1:8501"
+echo "Backend: http://127.0.0.1:8000 (internal)"
+echo "Frontend: http://0.0.0.0:$PORT (external)"
 
-tail --pid="$BACKEND_PID" -f /dev/null
+tail --pid="$FRONTEND_PID" -f /dev/null
 wait -n "$BACKEND_PID" "$FRONTEND_PID"
