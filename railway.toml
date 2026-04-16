@@ -1,0 +1,13 @@
+[build]
+  builder = "dockerfile"
+
+[deploy]
+  startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT --app-dir /app/backend"
+  restartPolicyCondition = "on-failure"
+  restartPolicyMaxRetries = 5
+
+[[services]]
+  name = "frontend"
+  source = { repo = "https://github.com/Bloated11/auto_ml" }
+  build = { builder = "dockerfile" }
+  deploy = { startCommand = "python -m streamlit run app.py --server.port $PORT --server.headless true --server.address 0.0.0.0", restartPolicyCondition = "on-failure" }
