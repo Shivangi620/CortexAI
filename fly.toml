@@ -6,6 +6,9 @@ primary_region = "lax"
   dockerfile = "Dockerfile"
 
 [env]
+  PYTHONPATH = "/app/backend:/app"
+
+[env]
   PYTHONUNBUFFERED = "true"
 
 [http_service]
