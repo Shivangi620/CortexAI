@@ -41,6 +41,7 @@ class DatasetModel(Base):
     profile_json = Column(Text)
     parent_dataset_id = Column(String, nullable=True)
     source_type = Column(String, nullable=True)
+    display_name = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -90,6 +91,9 @@ class ExperimentRun(Base):
     )
     job_id = Column(String, index=True)
     dataset_id = Column(String, nullable=True)
+    dataset_name = Column(String, nullable=True)
+    workspace_id = Column(String, nullable=True)
+    workspace_name = Column(String, nullable=True)
     model_name = Column(String, nullable=True)
     metric_name = Column(String, nullable=True)
     score = Column(String, nullable=True)
@@ -101,6 +105,44 @@ class ExperimentRun(Base):
     task_type = Column(String, nullable=True)
     mode = Column(String, nullable=True)
     goal = Column(String, nullable=True)
+    preset_name = Column(String, nullable=True)
+    summary_text = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorkspaceModel(Base):
+    __tablename__ = "workspaces"
+
+    id = Column(
+        String,
+        primary_key=True,
+        index=True,
+        default=lambda: __import__("uuid").uuid4().hex,
+    )
+    name = Column(String, nullable=False)
+    dataset_id = Column(String, nullable=True)
+    last_job_id = Column(String, nullable=True)
+    settings_json = Column(Text, nullable=True)
+    reports_json = Column(Text, nullable=True)
+    last_run_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NotificationModel(Base):
+    __tablename__ = "notifications"
+
+    id = Column(
+        String,
+        primary_key=True,
+        index=True,
+        default=lambda: __import__("uuid").uuid4().hex,
+    )
+    entity_type = Column(String, nullable=True)
+    entity_id = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    message = Column(Text, nullable=True)
+    level = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -187,6 +229,7 @@ def _run_migrations():
         "ALTER TABLE datasets ADD COLUMN created_at DATETIME",
         "ALTER TABLE datasets ADD COLUMN parent_dataset_id TEXT",
         "ALTER TABLE datasets ADD COLUMN source_type TEXT",
+        "ALTER TABLE datasets ADD COLUMN display_name TEXT",
         "ALTER TABLE drift_schedules ADD COLUMN warning_threshold TEXT",
         "ALTER TABLE drift_schedules ADD COLUMN critical_threshold TEXT",
         "ALTER TABLE drift_schedules ADD COLUMN last_alert_status TEXT",
@@ -205,6 +248,9 @@ def _run_migrations():
             id              TEXT PRIMARY KEY,
             job_id          TEXT,
             dataset_id      TEXT,
+            dataset_name    TEXT,
+            workspace_id    TEXT,
+            workspace_name  TEXT,
             model_name      TEXT,
             metric_name     TEXT,
             score           TEXT,
@@ -216,8 +262,15 @@ def _run_migrations():
             task_type       TEXT,
             mode            TEXT,
             goal            TEXT,
+            preset_name     TEXT,
+            summary_text    TEXT,
             created_at      DATETIME
         )""",
+        "ALTER TABLE experiment_runs ADD COLUMN dataset_name TEXT",
+        "ALTER TABLE experiment_runs ADD COLUMN workspace_id TEXT",
+        "ALTER TABLE experiment_runs ADD COLUMN workspace_name TEXT",
+        "ALTER TABLE experiment_runs ADD COLUMN preset_name TEXT",
+        "ALTER TABLE experiment_runs ADD COLUMN summary_text TEXT",
         """CREATE TABLE IF NOT EXISTS drift_checks (
             id              TEXT PRIMARY KEY,
             job_id          TEXT,
@@ -253,6 +306,26 @@ def _run_migrations():
             entity_type     TEXT,
             entity_id       TEXT,
             note            TEXT,
+            created_at      DATETIME
+        )""",
+        """CREATE TABLE IF NOT EXISTS workspaces (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            dataset_id      TEXT,
+            last_job_id     TEXT,
+            settings_json   TEXT,
+            reports_json    TEXT,
+            last_run_id     TEXT,
+            created_at      DATETIME,
+            updated_at      DATETIME
+        )""",
+        """CREATE TABLE IF NOT EXISTS notifications (
+            id              TEXT PRIMARY KEY,
+            entity_type     TEXT,
+            entity_id       TEXT,
+            title           TEXT,
+            message         TEXT,
+            level           TEXT,
             created_at      DATETIME
         )""",
     ]

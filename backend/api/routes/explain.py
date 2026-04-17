@@ -31,6 +31,28 @@ def get_shap_summary(job_id: str):
     return get_global_shap(job_id, results)
 
 
+@router.get("/permutation/{job_id}")
+def get_permutation_summary(job_id: str):
+    with get_db() as db:
+        job = db.query(JobModel).filter(JobModel.id == job_id).first()
+        if not job or not job.results_json:
+            raise HTTPException(status_code=404, detail="Job not found or not completed")
+
+        try:
+            results = normalize_results(json.loads(job.results_json))
+        except Exception:
+            results = {}
+
+    ranking = results.get("permutation_importance") or {}
+    return {
+        "job_id": job_id,
+        "feature_importance": [
+            {"feature": key, "importance": value}
+            for key, value in ranking.items()
+        ],
+    }
+
+
 @router.post("/explain/{job_id}")
 def explain_prediction(job_id: str, req: ExplainRequest):
     """

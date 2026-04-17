@@ -18,6 +18,7 @@ SESSION_DEFAULTS = {
     "upload_ingest_summary": {},
     "_workspace_restored": False,
     "_workspace_bootstrapped": False,
+    "_workspace_cleared": False,
 }
 
 
@@ -74,11 +75,30 @@ def sync_workspace_query_params(**extra: Any) -> None:
     sync_query_params(
         dataset_id=st.session_state.get("dataset_id"),
         job_id=st.session_state.get("job_id"),
+        fresh=None,
         **extra,
     )
 
 
+def clear_workspace_state() -> None:
+    st.session_state["dataset_id"] = None
+    st.session_state["profile"] = None
+    st.session_state["job_id"] = None
+    st.session_state["auto_detect"] = None
+    st.session_state["last_analyzed_file"] = None
+    st.session_state["upload_preview_records"] = []
+    st.session_state["upload_ingest_summary"] = {}
+    st.session_state["_workspace_restored"] = False
+    st.session_state["_workspace_cleared"] = True
+    sync_query_params(dataset_id=None, job_id=None, fresh="1")
+
+
 def restore_workspace_state() -> None:
+    if (_query_param_value("fresh") or "").lower() in {"1", "true", "yes"}:
+        st.session_state["_workspace_restored"] = False
+        st.session_state["_workspace_cleared"] = True
+        return
+
     dataset_id = _query_param_value("dataset_id")
     job_id = _query_param_value("job_id")
     path = (

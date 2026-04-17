@@ -13,6 +13,7 @@ from infra.logger import get_logger
 
 log = get_logger(__name__)
 csv.field_size_limit(int(1e9))
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 # ── Route imports ─────────────────────────────────────────────────────────────
 try:
@@ -59,13 +60,15 @@ except Exception:
 # ── Lifespan management ───────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        from infra.storage import cleanup_old_runs
-        removed = cleanup_old_runs(days=7)
-        if removed:
-            log.info(f"Cleaned {removed} old artifact(s).")
-    except Exception as e:
-        log.warning(f"Cleanup skipped: {e}")
+    run_cleanup = os.getenv("AUTOML_STARTUP_CLEANUP", "false").lower() == "true"
+    if run_cleanup:
+        try:
+            from infra.storage import cleanup_old_runs
+            removed = cleanup_old_runs(days=7)
+            if removed:
+                log.info(f"Cleaned {removed} old artifact(s).")
+        except Exception as e:
+            log.warning(f"Cleanup skipped: {e}")
     yield
 
 

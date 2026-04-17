@@ -74,6 +74,11 @@ def api_json(path: str, timeout: int = 15):
         return {"error": str(e)}
 
 
+@st.cache_data(show_spinner=False, ttl=30)
+def cached_api_json(path: str, timeout: int = 15):
+    return api_json(path, timeout=timeout)
+
+
 def prepare_download(
     label: str,
     session_key: str,
@@ -318,15 +323,13 @@ suggested_fixes = results.get("suggested_fixes", [])
 m_name = results.get("metric_name", "Score")
 leaderboard = results.get("leaderboard", []) or []
 tested_models = results.get("tested_models", []) or []
+warnings_payload = results.get("warnings", []) or []
 feature_names = results.get("feature_names", []) or []
 process_overview = build_process_overview(results)
-recommendations = api_json(f"/recommend/{job_id}", timeout=20)
 dataset_id = st.session_state.get("dataset_id")
 profile = st.session_state.get("profile") or {}
 contract_check = build_contract_check(feature_names, profile)
 failure_analysis = build_failure_analysis(results, perf_warning, suggested_fixes, profile)
-narrator = api_json(f"/narrate/{job_id}", timeout=20)
-trust_heatmap = api_json(f"/trust/{job_id}", timeout=20)
 
 performance_tab, analysis_tab, process_tab, playground_tab, augmentation_tab, coach_tab = st.tabs(
     [
@@ -375,11 +378,12 @@ with performance_tab:
                 st.markdown(f"- {fix}")
         st.markdown("---")
 
-    stat_cols = st.columns(4)
+    stat_cols = st.columns(5)
     stat_cols[0].metric("Winner", results.get("best_model", "—"))
     stat_cols[1].metric(m_name, format_metric_value(m_name, results.get("score", 0)))
     stat_cols[2].metric("Task", "Classification" if results.get("is_classification") else "Regression")
     stat_cols[3].metric("Features", len(feature_names))
+    stat_cols[4].metric("CV Stability", f"±{results.get('cv_std', '—')}")
 
     c1, c2 = st.columns([1.15, 0.85])
     with c1:
@@ -416,13 +420,17 @@ with performance_tab:
         st.info(story)
 
         st.markdown("### 📝 Experiment Narrator")
+        narrator = cached_api_json(f"/narrate/{job_id}", timeout=20)
         if narrator.get("error"):
             st.info("Narrative is not available right now.")
         else:
             st.caption(narrator.get("narrative", "Narrative unavailable."))
 
         st.markdown("### 🛠 Failure Analyzer")
-        if failure_analysis:
+        if warnings_payload:
+            for item in warnings_payload[:6]:
+                st.caption(f"• {item.get('type', 'warning')}: {item.get('message', '')}")
+        elif failure_analysis:
             for item in failure_analysis[:6]:
                 st.caption(f"• {item}")
         else:
@@ -504,6 +512,15 @@ with analysis_tab:
             st.info("SHAP data not available for this model.")
 
     with c_sha2:
+        st.markdown("### 🔁 Permutation Importance")
+        perm_data = results.get("permutation_importance", {}) or {}
+        if perm_data:
+            perm_df = pd.Series(perm_data).sort_values(ascending=False).rename("Importance")
+            st.bar_chart(perm_df)
+        else:
+            st.caption("Permutation importance not available for this run.")
+
+        st.markdown("---")
         st.markdown("### 📋 Data Processing Stats")
         eda_summary = results.get("eda_summary", {}) or {}
         if eda_summary:
@@ -532,18 +549,19 @@ with analysis_tab:
     st.markdown("---")
     d1, d2 = st.columns([1, 1])
     calibration = (
-        api_json(f"/calibration/{job_id}", timeout=20)
+        cached_api_json(f"/calibration/{job_id}", timeout=20)
         if results.get("is_classification")
         else {"error": "Calibration report is only available for classification jobs."}
     )
     thresholds = (
-        api_json(f"/thresholds/{job_id}", timeout=20)
+        cached_api_json(f"/thresholds/{job_id}", timeout=20)
         if results.get("is_classification")
         else {"error": "Threshold tuning is only available for classification jobs."}
     )
-    lineage = api_json(f"/lineage/{job_id}", timeout=20)
-    drift_feature_timeline = api_json(f"/drift/{job_id}/feature-timeline", timeout=20)
-    dataset_lineage_graph = api_json(f"/dataset/{dataset_id}/lineage-graph", timeout=20) if dataset_id else {"error": "No dataset loaded."}
+    lineage = cached_api_json(f"/lineage/{job_id}", timeout=20)
+    drift_feature_timeline = cached_api_json(f"/drift/{job_id}/feature-timeline", timeout=20)
+    dataset_lineage_graph = cached_api_json(f"/dataset/{dataset_id}/lineage-graph", timeout=20) if dataset_id else {"error": "No dataset loaded."}
+    dataset_versions = cached_api_json(f"/dataset/{dataset_id}/versions?target_column={results.get('target', '')}", timeout=20) if dataset_id else {"error": "No dataset loaded."}
 
     with d1:
         st.markdown("### 🎯 Calibration Report")
@@ -585,6 +603,19 @@ with analysis_tab:
                     if cols_to_chart:
                         st.line_chart(threshold_chart[cols_to_chart])
 
+        st.markdown("### 🧾 Dataset Version Comparison")
+        if dataset_versions.get("error"):
+            st.info(dataset_versions["error"])
+        else:
+            ver_cols = st.columns(4)
+            ver_cols[0].metric("Current Rows", dataset_versions.get("current_rows", "—"))
+            ver_cols[1].metric("Previous Rows", dataset_versions.get("previous_rows", "—"))
+            ver_cols[2].metric("Row Delta", dataset_versions.get("row_delta", "—"))
+            ver_cols[3].metric("Added Columns", len(dataset_versions.get("added_columns", []) or []))
+            missing_changes = pd.DataFrame(dataset_versions.get("missingness_changes", []))
+            if not missing_changes.empty:
+                render_safe_dataframe(missing_changes, width="stretch", hide_index=True)
+
     with d2:
         st.markdown("### 🧱 Feature Lineage")
         if lineage.get("error"):
@@ -613,6 +644,7 @@ with analysis_tab:
                 render_safe_dataframe(pd.DataFrame(nodes), width="stretch", hide_index=True)
 
         st.markdown("### 💡 Recommendations")
+        recommendations = cached_api_json(f"/recommend/{job_id}", timeout=20)
         recommendation_items = recommendations.get("recommendations", [])
         if recommendation_items:
             for item in recommendation_items[:8]:
@@ -621,6 +653,7 @@ with analysis_tab:
             st.info("Recommendations will appear here when available.")
 
         st.markdown("### 🔥 Trust Heatmap")
+        trust_heatmap = cached_api_json(f"/trust/{job_id}", timeout=20)
         if trust_heatmap.get("error"):
             st.info(trust_heatmap["error"])
         else:

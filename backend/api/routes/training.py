@@ -10,7 +10,6 @@ import pandas as pd
 from infra.database import get_db, DatasetModel, JobModel
 from infra.result_contract import normalize_results, sanitize_for_json
 from core.file_loader import load_dataframe
-from core.worker import run_training_job
 
 router = APIRouter(prefix="/api", tags=["training"])
 
@@ -23,6 +22,9 @@ class TrainRequest(BaseModel):
     target_column: str
     goal: str
     mode: str
+    preset_name: str = ""
+    workspace_id: str = ""
+    workspace_name: str = ""
     eval_metric: str = ""
     selected_features: List[str] = Field(default_factory=list)
     handle_imbalance: bool = False
@@ -38,6 +40,7 @@ class TrainingForecastRequest(BaseModel):
     target_column: str = ""
     goal: str = "Balanced"
     mode: str = "Balanced"
+    preset_name: str = ""
     eval_metric: str = ""
     selected_features: List[str] = Field(default_factory=list)
     handle_imbalance: bool = False
@@ -121,7 +124,10 @@ def start_training(req: TrainRequest):
         "selected_features": req.selected_features,
         "handle_imbalance": req.handle_imbalance,
         "auto_clean": req.auto_clean,
-        "cv_folds": req.cv_folds,
+        "cv_folds": req.cv_folds or 5,
+        "preset_name": req.preset_name,
+        "workspace_id": req.workspace_id,
+        "workspace_name": req.workspace_name,
         "export_model": req.export_model,
         "export_code": req.export_code,
         "export_report": req.export_report,
@@ -144,6 +150,8 @@ def start_training(req: TrainRequest):
         )
         db.commit()
 
+    from core.worker import run_training_job
+
     run_training_job.delay(
         job_id,
         req.dataset_id,
@@ -155,7 +163,7 @@ def start_training(req: TrainRequest):
         selected_features=req.selected_features,
         handle_imbalance=req.handle_imbalance,
         auto_clean=req.auto_clean,
-        cv_folds=req.cv_folds,
+        cv_folds=req.cv_folds or 5,
     )
 
     return {"job_id": job_id}

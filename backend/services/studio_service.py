@@ -7,10 +7,11 @@ import numpy as np
 import pandas as pd
 
 from core.file_loader import load_dataframe
-from infra.database import DatasetModel, ExperimentRun, JobModel, get_db
+from infra.database import DatasetModel, ExperimentRun, JobModel, WorkspaceModel, NotificationModel, get_db
+from services.data_sanitizer import build_dataset_version_report
 
 
-def list_datasets(limit: int = 100) -> List[Dict[str, Any]]:
+def list_datasets(limit: int = 100, include_archived: bool = False) -> List[Dict[str, Any]]:
     with get_db() as db:
         rows = (
             db.query(DatasetModel)
@@ -24,10 +25,15 @@ def list_datasets(limit: int = 100) -> List[Dict[str, Any]]:
                 profile = json.loads(row.profile_json) if row.profile_json else {}
             except Exception:
                 profile = {}
+            archived = bool(profile.get("archived")) or str(row.source_type or "").startswith("archived:")
+            if archived and not include_archived:
+                continue
             items.append(
                 {
                     "id": row.id,
                     "source_type": row.source_type or "unknown",
+                    "display_name": row.display_name,
+                    "archived": archived,
                     "parent_dataset_id": row.parent_dataset_id,
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                     "rows": profile.get("rows"),
@@ -104,6 +110,7 @@ def get_workspace_snapshot(
     with get_db() as db:
         dataset_row = None
         job_row = None
+        workspace_row = None
 
         if job_id:
             job_row = db.query(JobModel).filter(JobModel.id == job_id).first()
@@ -134,9 +141,83 @@ def get_workspace_snapshot(
                 db.query(JobModel).order_by(JobModel.created_at.desc()).first()
             )
 
+        if job_row and job_row.params_json:
+            try:
+                params = json.loads(job_row.params_json)
+            except Exception:
+                params = {}
+            workspace_id = params.get("workspace_id")
+            workspace_name = params.get("workspace_name")
+            if workspace_id:
+                workspace_row = db.query(WorkspaceModel).filter(WorkspaceModel.id == workspace_id).first()
+            elif workspace_name:
+                workspace_row = db.query(WorkspaceModel).filter(WorkspaceModel.name == workspace_name).first()
+
     return {
+        "workspace": {
+            "id": workspace_row.id,
+            "name": workspace_row.name,
+            "dataset_id": workspace_row.dataset_id,
+            "last_job_id": workspace_row.last_job_id,
+            "last_run_id": workspace_row.last_run_id,
+        } if workspace_row else None,
         "dataset": _dataset_snapshot(dataset_row),
         "job": _job_snapshot(job_row),
+    }
+
+
+def compare_dataset_versions(dataset_id: str, target: str | None = None) -> Dict[str, Any]:
+    with get_db() as db:
+        current = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+        if not current:
+            return {"error": "Dataset not found"}
+        previous = None
+        if current.parent_dataset_id:
+            previous = db.query(DatasetModel).filter(DatasetModel.id == current.parent_dataset_id).first()
+        if not previous:
+            previous = (
+                db.query(DatasetModel)
+                .filter(DatasetModel.id != dataset_id)
+                .order_by(DatasetModel.created_at.desc())
+                .first()
+            )
+        if not previous:
+            return {"error": "No previous dataset version found"}
+
+    current_df = load_dataframe(filepath=current.file_path)
+    previous_df = load_dataframe(filepath=previous.file_path)
+    if current_df is None or previous_df is None:
+        return {"error": "Could not load dataset versions"}
+
+    report = build_dataset_version_report(current_df, previous_df, target=target)
+    report.update(
+        {
+            "dataset_id": dataset_id,
+            "current_dataset_id": current.id,
+            "previous_dataset_id": previous.id,
+            "current_name": current.display_name,
+            "previous_name": previous.display_name,
+        }
+    )
+    return report
+
+
+def list_notifications(limit: int = 50) -> Dict[str, Any]:
+    with get_db() as db:
+        rows = db.query(NotificationModel).order_by(NotificationModel.created_at.desc()).limit(limit).all()
+    return {
+        "notifications": [
+            {
+                "id": row.id,
+                "entity_type": row.entity_type,
+                "entity_id": row.entity_id,
+                "title": row.title,
+                "message": row.message,
+                "level": row.level,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
     }
 
 

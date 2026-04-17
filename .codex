@@ -1,0 +1,212 @@
+# CODIN Product Roadmap
+
+## Phase 1: Must-Have
+
+These items fix the biggest weaknesses and improve trust.
+
+### Global sanitizer + validator
+
+Use one shared pipeline:
+
+- after upload
+- before profiling
+- before training
+- before inference
+
+Include:
+
+- empty-string cleanup
+- numeric coercion
+- datetime detection
+- categorical cleanup
+- duplicate handling
+- target validation
+
+### Cross-validation
+
+Replace single split as the main evaluation path.
+
+Show `mean ± std` for each model so results feel statistically reliable.
+
+### Richer metrics
+
+Add:
+
+- Classification: `F1`, `Precision`, `Recall`, `ROC-AUC`, `Confusion Matrix`
+- Regression: `RMSE`, `MAE`, `MAPE`
+
+### Stronger warnings system
+
+Add warnings for:
+
+- overfitting
+- class imbalance
+- target leakage
+- too-small dataset
+- too many missing values
+- unstable CV scores
+
+### Run history
+
+Save every training run with:
+
+- dataset name
+- target
+- models tried
+- parameters
+- metrics
+- timestamp
+
+## Phase 2: Strong Differentiators
+
+These make the project feel advanced instead of just another AutoML app.
+
+### Named workspaces
+
+Each workspace stores:
+
+- dataset
+- target
+- settings
+- reports
+- past runs
+
+### Resume last completed run
+
+Let users reopen the last successful experiment without retraining.
+
+### Reusable training presets
+
+Examples:
+
+- Fast
+- Balanced
+- High Accuracy
+- Explainable
+- Low Resource
+
+### Model explainability
+
+Add:
+
+- SHAP summary plots
+- feature importance
+- permutation importance
+- per-prediction explanation
+
+### Interactive model comparison
+
+Compare models by:
+
+- accuracy
+- speed
+- stability
+- explainability
+
+## Phase 3: Interview Wow-Factor
+
+These are the features that make people stop and say this is different.
+
+### Dataset versioning
+
+Track uploaded dataset versions and compare them.
+
+Show what changed in:
+
+- rows
+- columns
+- missingness
+- target distribution
+
+### Data drift detection
+
+Compare current dataset vs previous version and warn if distributions shifted.
+
+### Synthetic data quality panel
+
+Compare real vs synthetic on:
+
+- distributions
+- correlations
+- target behavior
+- privacy similarity risk
+
+### Leakage detector
+
+Flag columns that look suspiciously predictive of the target.
+
+### AI-generated experiment summaries
+
+Generate short explanations such as:
+
+`Model A performed better because it handled nonlinear interactions and was less sensitive to missing values.`
+
+## Phase 4: Future / Near-Production
+
+These are for scale and maturity.
+
+### Background training jobs
+
+Keep the UI responsive during long runs.
+
+### Large dataset mode
+
+Add:
+
+- chunked reads
+- sampling mode
+- memory-safe profiling
+
+### Notification center
+
+Show:
+
+- completed runs
+- failures
+- warnings
+- drift alerts
+
+### Exportable reports
+
+Download `PDF` or `HTML` reports for portfolio demos or stakeholders.
+
+### Prediction confidence
+
+Show:
+
+- confidence scores
+- uncertainty bands
+- calibration warnings
+
+## Best Order To Build
+
+1. Global sanitizer + validator
+2. Cross-validation + expanded metrics
+3. Warnings system
+4. Run history
+5. Named workspaces
+6. Explainability with SHAP
+7. Reusable presets
+8. Dataset versioning
+9. Drift detection
+10. Notification center
+
+## Best Features For Interviews
+
+If recruiter or interview impact is the goal, highlight:
+
+- Dataset DNA panel
+- Health score
+- Central data sanitization
+- Cross-validation stability reporting
+- SHAP explainability
+- Run history + experiment tracking
+- Synthetic data generator
+- Dataset version comparison
+- Simple Category View
+
+## Priority Summary
+
+- Must-have: sanitizer, CV, metrics, warnings, run history
+- Nice-to-have: workspaces, presets, resume run, interactive comparisons
+- Wow-factor: SHAP, versioning, drift detection, synthetic quality panel, AI summaries

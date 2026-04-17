@@ -8,6 +8,7 @@ import os
 import json
 import numpy as np
 from typing import Dict, Any, List
+from services.data_sanitizer import sanitize_dataframe
 
 
 def get_global_shap(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
@@ -76,7 +77,7 @@ def explain_local(
         else:
             row = dict(features or {})
 
-        input_df = pd.DataFrame([row])
+        input_df = sanitize_dataframe(pd.DataFrame([row])).df
 
         pred = pipeline.predict(input_df)[0]
         prediction = float(pred) if hasattr(pred, "item") else pred

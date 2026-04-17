@@ -145,6 +145,18 @@ with c6:
     if not (health and health.get("issues")):
         st.success(f"**Recommended Pipeline:** {profile.get('suggested_model', 'Unknown')}")
 
+sanitizer_report = profile.get("sanitizer", {}) or {}
+if sanitizer_report:
+    st.markdown("---")
+    st.markdown("#### Central Sanitizer")
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Rows After", sanitizer_report.get("rows_after", "—"))
+    s2.metric("Duplicate Rows Removed", sanitizer_report.get("duplicate_rows_removed", 0))
+    s3.metric("Numeric Coercions", len(sanitizer_report.get("numeric_coercions", []) or []))
+    s4.metric("Datetime Columns", len(sanitizer_report.get("datetime_columns", []) or []))
+    for line in (profile.get("sanitizer_logs", []) or [])[:6]:
+        st.caption(f"• {line}")
+
 st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
@@ -203,6 +215,29 @@ st.markdown('</div>', unsafe_allow_html=True)
 dataset_id = st.session_state.get("dataset_id")
 
 if dataset_id:
+    st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+    st.markdown("### 🧾 Dataset Version Comparison")
+    try:
+        version_res = requests.get(f"{API_URL}/dataset/{dataset_id}/versions?target_column={profile.get('suggested_target','')}", timeout=15)
+        version_payload = version_res.json() if version_res.status_code == 200 else {"error": f"HTTP {version_res.status_code}"}
+    except Exception as e:
+        version_payload = {"error": str(e)}
+
+    if version_payload.get("error"):
+        st.info("Version comparison will appear after you create a repaired, merged, drifted, or synthetic dataset.")
+    else:
+        v1, v2, v3, v4 = st.columns(4)
+        v1.metric("Current Rows", version_payload.get("current_rows", 0))
+        v2.metric("Previous Rows", version_payload.get("previous_rows", 0))
+        v3.metric("Row Delta", version_payload.get("row_delta", 0))
+        v4.metric("Added Columns", len(version_payload.get("added_columns", []) or []))
+        if version_payload.get("missingness_changes"):
+            render_safe_dataframe(pd.DataFrame(version_payload.get("missingness_changes", [])), width="stretch", hide_index=True)
+        target_shift = (version_payload.get("target_shift") or {}).get("distribution_delta", [])
+        if target_shift:
+            render_safe_dataframe(pd.DataFrame(target_shift), width="stretch", hide_index=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.markdown("### 🕓 Dataset Version Timeline")
     try:

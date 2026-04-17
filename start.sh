@@ -39,7 +39,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000 --timeout-keep-alive 600
 BACKEND_PID=$!
 
 echo "Starting Celery worker..."
-python -m celery -A core.worker.celery_app worker --loglevel=info --concurrency=1 &
+python -m celery -A backend.core.worker.celery_app worker --loglevel=info --concurrency=1 &
 WORKER_PID=$!
 
 echo "Starting Streamlit frontend on port 8501..."

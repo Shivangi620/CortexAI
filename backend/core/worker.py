@@ -3,7 +3,7 @@ import json
 import csv
 from celery import Celery
 
-from infra.database import get_db, JobModel, DatasetModel
+from infra.database import get_db, JobModel, DatasetModel, NotificationModel, WorkspaceModel, ExperimentRun
 from infra.logger import get_logger
 from infra.result_contract import normalize_results
 
@@ -65,7 +65,7 @@ def run_training_job(
         "selected_features": selected_features,
         "handle_imbalance": handle_imbalance,
         "auto_clean": auto_clean,
-        "cv_folds": cv_folds
+        "cv_folds": cv_folds or 5
     }
 
     ctx = PipelineContext(
@@ -131,6 +131,45 @@ def run_training_job(
                     except Exception:
                         job.reasoning_json = json.dumps([str(r) for r in reasoning])
 
+                    db.commit()
+                    try:
+                        params = json.loads(job.params_json) if job.params_json else {}
+                    except Exception:
+                        params = {}
+
+                    workspace_id = params.get("workspace_id")
+                    workspace_name = params.get("workspace_name")
+                    if workspace_id or workspace_name:
+                        workspace = None
+                        if workspace_id:
+                            workspace = db.query(WorkspaceModel).filter(WorkspaceModel.id == workspace_id).first()
+                        if not workspace and workspace_name:
+                            workspace = db.query(WorkspaceModel).filter(WorkspaceModel.name == workspace_name).first()
+                        if workspace:
+                            workspace.dataset_id = dataset_id
+                            workspace.last_job_id = job_id
+                            workspace.settings_json = json.dumps(params)
+
+                    latest_run = (
+                        db.query(ExperimentRun)
+                        .filter(ExperimentRun.job_id == job_id)
+                        .order_by(ExperimentRun.created_at.desc())
+                        .first()
+                    )
+                    if workspace_id and latest_run:
+                        workspace = db.query(WorkspaceModel).filter(WorkspaceModel.id == workspace_id).first()
+                        if workspace:
+                            workspace.last_run_id = latest_run.id
+
+                    db.add(
+                        NotificationModel(
+                            entity_type="job",
+                            entity_id=job_id,
+                            title="Training Completed",
+                            message=(results.get("summary_text") if isinstance(results, dict) else None) or f"Run {job_id[:8]} completed successfully.",
+                            level="success",
+                        )
+                    )
                     db.commit()
         except Exception as e:
             log.warning(f"Final DB write failed: {e}", exc_info=True)

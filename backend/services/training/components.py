@@ -18,6 +18,8 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     f1_score,
+    roc_auc_score,
+    confusion_matrix,
     mean_squared_error,
     mean_absolute_error,
 )
@@ -38,6 +40,8 @@ from core.feature_engine import ManagedFeatureEngine
 from core.integrations import MLTracking
 from infra.database import DatasetModel, get_db
 from infra.storage import ModelRegistry, DataContract, get_model_path, get_schema_path, save_metrics
+from services.data_sanitizer import sanitize_dataframe, summarize_experiment
+from services.leakage_service import run_leakage_report
 from services.training.preprocessing import (
     make_lite_preprocessor,
     make_preprocessor,
@@ -70,6 +74,16 @@ class DataValidationComponent(PipelineComponent):
             ctx.reasoning.append(
                 f"DataValidation: Feature selection applied, keeping {len(available)} columns: {available}"
             )
+
+        sanitized = sanitize_dataframe(df, target=ctx.target_column)
+        df = sanitized.df
+        ctx.reasoning.extend(sanitized.logs)
+        ctx.sanitizer_report = sanitized.report
+        ctx.reasoning.append(
+            "DataValidation: Applied the shared sanitizer/validator before profiling and training."
+        )
+        if not sanitized.report.get("target_valid", True):
+            raise ValueError(sanitized.report.get("target_issue") or "Invalid target column after sanitization.")
 
         # 1. Null Value Thresholds (NaN > 90% is critical failure)
         nan_percentages = df.isna().mean()
@@ -408,8 +422,9 @@ class TrainingComponent(PipelineComponent):
             )
 
     def _safe_cv(self, y, requested_folds: int, is_classification: bool):
+        requested_folds = int(requested_folds or 5)
         if requested_folds < 2:
-            return None
+            requested_folds = 2
         if not is_classification:
             return KFold(
                 n_splits=min(requested_folds, max(2, len(pd.Series(y)) // 2)),
@@ -583,7 +598,7 @@ class TrainingComponent(PipelineComponent):
 
                         pipe = Pipeline([("pre", ctx.preprocessor), ("m", m)])
                         metric = ctx.config.get("eval_metric", "")
-                        cv_folds = int(ctx.config.get("cv_folds", 0) or 0)
+                        cv_folds = int(ctx.config.get("cv_folds", 0) or 5)
 
                         if cv_folds >= 2:
                             cv = self._safe_cv(
@@ -712,18 +727,141 @@ class EvaluationComponent(PipelineComponent):
             versions["lightgbm"] = "not_installed"
         return versions
 
+    def _compute_permutation_importance(self, ctx: PipelineContext) -> Dict[str, float]:
+        try:
+            from sklearn.inspection import permutation_importance
+
+            sample_X = ctx.X_test.head(min(len(ctx.X_test), 200))
+            sample_y = ctx.y_test[: len(sample_X)]
+            result = permutation_importance(
+                ctx.final_model,
+                sample_X,
+                sample_y,
+                n_repeats=5,
+                random_state=42,
+                scoring=_resolve_scoring(
+                    ctx.config.get("eval_metric", ""), ctx.is_classification
+                ),
+            )
+            ranked = sorted(
+                zip(sample_X.columns, result.importances_mean),
+                key=lambda item: abs(float(item[1])),
+                reverse=True,
+            )
+            return {
+                str(name): round(float(score), 6)
+                for name, score in ranked[:15]
+            }
+        except Exception:
+            return {}
+
+    def _build_warning_payload(
+        self,
+        ctx: PipelineContext,
+        cv_mean: float,
+        cv_std: float,
+        holdout_score: float,
+    ) -> list[Dict[str, Any]]:
+        warnings: list[Dict[str, Any]] = []
+        sanitizer = getattr(ctx, "sanitizer_report", {}) or {}
+        leakage = run_leakage_report(ctx.df, ctx.target_column)
+
+        if abs(holdout_score - cv_mean) >= 0.08:
+            warnings.append(
+                {
+                    "type": "overfitting",
+                    "severity": "high" if holdout_score > cv_mean else "medium",
+                    "message": f"Holdout score ({holdout_score:.3f}) differs materially from CV mean ({cv_mean:.3f}).",
+                }
+            )
+
+        if ctx.is_classification:
+            class_counts = pd.Series(ctx.y).value_counts(normalize=True)
+            if not class_counts.empty and float(class_counts.max()) >= 0.75:
+                warnings.append(
+                    {
+                        "type": "class_imbalance",
+                        "severity": "medium",
+                        "message": f"One class represents {round(float(class_counts.max()) * 100, 1)}% of the data.",
+                    }
+                )
+
+        if (sanitizer.get("rows_after") or len(ctx.df)) < 120:
+            warnings.append(
+                {
+                    "type": "too_small_dataset",
+                    "severity": "high",
+                    "message": "Dataset is small after sanitization; CV variance and overfitting risk are elevated.",
+                }
+            )
+
+        missing_pct = float(ctx.df.isna().mean().mean() * 100) if len(ctx.df.columns) else 0.0
+        if missing_pct >= 20:
+            warnings.append(
+                {
+                    "type": "too_many_missing_values",
+                    "severity": "medium",
+                    "message": f"Average feature missingness is {round(missing_pct, 1)}%.",
+                }
+            )
+
+        if cv_std >= 0.08:
+            warnings.append(
+                {
+                    "type": "unstable_cv_scores",
+                    "severity": "medium",
+                    "message": f"Cross-validation standard deviation is {round(cv_std * 100, 2)} points.",
+                }
+            )
+
+        if leakage.get("target_correlated") or leakage.get("future_leakage"):
+            warnings.append(
+                {
+                    "type": "target_leakage",
+                    "severity": "high",
+                    "message": "Leakage detector found suspiciously predictive or future-looking columns.",
+                    "details": {
+                        "target_correlated": leakage.get("target_correlated", [])[:10],
+                        "future_leakage": leakage.get("future_leakage", [])[:10],
+                    },
+                }
+            )
+        return warnings
+
     def execute(self, ctx: PipelineContext):
         preds = ctx.final_model.predict(ctx.X_test)
         execution_profile = getattr(
             ctx, "execution_profile", None
         ) or TrainingComponent()._execution_profile(ctx)
         sweep_size = execution_profile["sweep_size"]
+        cv = TrainingComponent()._safe_cv(
+            ctx.y_train,
+            int(ctx.config.get("cv_folds", 0) or 5),
+            ctx.is_classification,
+        )
+        scoring_name = _resolve_scoring(ctx.config.get("eval_metric", ""), ctx.is_classification)
+        cv_scores = []
+        if cv is not None:
+            try:
+                cv_scores = cross_val_score(
+                    ctx.final_model,
+                    ctx.X_train,
+                    ctx.y_train,
+                    cv=cv,
+                    scoring=scoring_name,
+                )
+            except Exception as e:
+                ctx.reasoning.append(f"CrossValidation: CV scoring fallback triggered ({e}).")
+                cv_scores = []
 
-        score = (
+        holdout_score = (
             accuracy_score(ctx.y_test, preds)
             if ctx.is_classification
             else r2_score(ctx.y_test, preds)
         )
+        cv_mean = float(np.mean(cv_scores)) if len(cv_scores) else float(holdout_score)
+        cv_std = float(np.std(cv_scores)) if len(cv_scores) else 0.0
+        score = cv_mean
         ctx.final_score = score
 
         # Explainability
@@ -744,11 +882,19 @@ class EvaluationComponent(PipelineComponent):
             ctx.reasoning.append(f"Explainability SHAP skipped ({e})")
 
         ctx.shap_summary = shap_summary
+        permutation_summary = self._compute_permutation_importance(ctx)
 
         final_sc = round(score * 100, 1)
         ctx.record_history("Final", final_sc, phase="holdout_test", status="ok")
         lb = [
-            {"model": ctx.winner_pool_name, "score": final_sc, "phase": "holdout_test"}
+            {
+                "model": ctx.winner_pool_name,
+                "score": final_sc,
+                "phase": "cross_validation",
+                "cv_mean": round(cv_mean * 100, 2),
+                "cv_std": round(cv_std * 100, 2),
+                "holdout_score": round(float(holdout_score) * 100, 2),
+            }
         ]
 
         for r in ctx.sweep_results:
@@ -765,30 +911,61 @@ class EvaluationComponent(PipelineComponent):
             lb.append(row)
 
         if ctx.is_classification:
-            lb[0]["precision"] = round(
-                float(
-                    precision_score(
-                        ctx.y_test, preds, average="weighted", zero_division=0
-                    )
+            precision = float(
+                precision_score(
+                    ctx.y_test, preds, average="weighted", zero_division=0
                 )
-                * 100,
+            )
+            recall = float(
+                recall_score(ctx.y_test, preds, average="weighted", zero_division=0)
+            )
+            f1 = float(
+                f1_score(ctx.y_test, preds, average="weighted", zero_division=0)
+            )
+            roc_auc = None
+            confusion = confusion_matrix(ctx.y_test, preds).tolist()
+            try:
+                if hasattr(ctx.final_model, "predict_proba"):
+                    probs = ctx.final_model.predict_proba(ctx.X_test)
+                    if probs.shape[1] == 2:
+                        roc_auc = float(roc_auc_score(ctx.y_test, probs[:, 1]))
+                    else:
+                        roc_auc = float(
+                            roc_auc_score(
+                                ctx.y_test,
+                                probs,
+                                multi_class="ovr",
+                                average="weighted",
+                            )
+                        )
+            except Exception:
+                roc_auc = None
+            lb[0]["precision"] = round(
+                precision * 100,
                 1,
             )
             lb[0]["recall"] = round(
-                float(
-                    recall_score(ctx.y_test, preds, average="weighted", zero_division=0)
-                )
-                * 100,
+                recall * 100,
                 1,
             )
             lb[0]["f1"] = round(
-                float(f1_score(ctx.y_test, preds, average="weighted", zero_division=0))
-                * 100,
+                f1 * 100,
                 1,
             )
+            lb[0]["roc_auc"] = round(roc_auc * 100, 1) if roc_auc is not None else None
+            lb[0]["confusion_matrix"] = confusion
         else:
-            lb[0]["mse"] = round(float(mean_squared_error(ctx.y_test, preds)), 6)
-            lb[0]["mae"] = round(float(mean_absolute_error(ctx.y_test, preds)), 6)
+            rmse = float(np.sqrt(mean_squared_error(ctx.y_test, preds)))
+            mae = float(mean_absolute_error(ctx.y_test, preds))
+            mape = None
+            try:
+                denom = np.where(np.abs(np.asarray(ctx.y_test)) < 1e-9, np.nan, np.asarray(ctx.y_test))
+                mape = float(np.nanmean(np.abs((np.asarray(ctx.y_test) - np.asarray(preds)) / denom)) * 100)
+            except Exception:
+                mape = None
+            lb[0]["rmse"] = round(rmse, 6)
+            lb[0]["mae"] = round(mae, 6)
+            lb[0]["mape"] = round(mape, 4) if mape is not None and np.isfinite(mape) else None
 
         winner_debug = next(
             (r for r in ctx.tested_models if r["model"] == ctx.winner_pool_name), None
@@ -806,6 +983,7 @@ class EvaluationComponent(PipelineComponent):
                 winner_debug["mae"] = lb[0].get("mae")
 
         ctx.leaderboard = lb
+        warnings_payload = self._build_warning_payload(ctx, cv_mean=cv_mean, cv_std=cv_std, holdout_score=float(holdout_score))
 
         schema_hash = None
         schema_snapshot = {}
@@ -830,7 +1008,7 @@ class EvaluationComponent(PipelineComponent):
             "selected_feature_count": len(ctx.config.get("selected_features") or []) or len(ctx.num_cols + ctx.cat_cols),
             "auto_clean": bool(ctx.config.get("auto_clean", True)),
             "handle_imbalance": bool(ctx.config.get("handle_imbalance", False)),
-            "cv_folds_used": int(ctx.config.get("cv_folds", 0) or 0),
+            "cv_folds_used": int(ctx.config.get("cv_folds", 0) or 5),
             "eval_metric_requested": ctx.config.get("eval_metric") or ("Accuracy" if ctx.is_classification else "R²"),
             "train_test_split_random_state": 42,
             "stability_seeds": [42, 123, 999],
@@ -842,7 +1020,7 @@ class EvaluationComponent(PipelineComponent):
             "task_type": "classification" if ctx.is_classification else "regression",
             "eval_metric_requested": ctx.config.get("eval_metric")
             or ("Accuracy" if ctx.is_classification else "R²"),
-            "cv_folds_used": int(ctx.config.get("cv_folds", 0) or 0),
+            "cv_folds_used": int(ctx.config.get("cv_folds", 0) or 5),
             "preprocessor": (
                 "full_column_transformer"
                 if execution_profile["use_full_preprocessor"]
@@ -871,11 +1049,16 @@ class EvaluationComponent(PipelineComponent):
 
         ctx.metrics = {
             "best_model": ctx.winner_pool_name,
-            "metric_name": "Accuracy" if ctx.is_classification else "R² Score",
+            "metric_name": ("CV Accuracy" if ctx.is_classification else "CV R² Score"),
             "score": final_sc,
+            "cv_mean": round(cv_mean * 100, 2),
+            "cv_std": round(cv_std * 100, 2),
+            "cv_scores": [round(float(s) * 100, 2) for s in list(cv_scores)],
+            "holdout_score": round(float(holdout_score) * 100, 2),
             "leaderboard": lb,
             "is_classification": ctx.is_classification,
             "shap_summary": shap_summary,
+            "permutation_importance": permutation_summary,
             "model_path": get_model_path(ctx.job_id),
             "feature_names": ctx.num_cols + ctx.cat_cols,
             "target": ctx.target_column,
@@ -886,6 +1069,9 @@ class EvaluationComponent(PipelineComponent):
             "mode": ctx.mode,
             "execution_profile": execution_profile,
             "tested_models": ctx.tested_models,
+            "warnings": warnings_payload,
+            "sanitizer_report": getattr(ctx, "sanitizer_report", {}),
+            "leakage_report": run_leakage_report(ctx.df, ctx.target_column),
             "reproducibility_snapshot": reproducibility,
             "dataset_lineage_snapshot": {
                 "dataset_id": ctx.dataset_id,
@@ -893,6 +1079,7 @@ class EvaluationComponent(PipelineComponent):
                 "source_type": dataset_row.source_type if dataset_row else None,
             },
         }
+        ctx.metrics["summary_text"] = summarize_experiment(ctx.metrics)
         save_metrics(ctx.job_id, ctx.metrics)
 
         MLTracking.log_run(

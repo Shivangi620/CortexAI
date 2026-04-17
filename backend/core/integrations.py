@@ -92,11 +92,16 @@ class MLTracking:
 
         # Local experiment tracking DB
         try:
-            from infra.database import get_db, JobModel, ExperimentRun
+            from infra.database import get_db, JobModel, ExperimentRun, DatasetModel
 
             with get_db() as db:
                 job = db.query(JobModel).filter(JobModel.id == job_id).first()
                 if job:
+                    dataset = (
+                        db.query(DatasetModel)
+                        .filter(DatasetModel.id == job.dataset_id)
+                        .first()
+                    )
                     try:
                         job_params = json.loads(job.params_json) if job.params_json else {}
                     except Exception:
@@ -122,6 +127,9 @@ class MLTracking:
                     run = ExperimentRun(
                         job_id=job_id,
                         dataset_id=job.dataset_id,
+                        dataset_name=(dataset.display_name if dataset else None),
+                        workspace_id=str(job_params.get("workspace_id") or "") or None,
+                        workspace_name=str(job_params.get("workspace_name") or "") or None,
                         model_name=str(best_model) if best_model else None,
                         metric_name=str(metric_name),
                         score=str(score) if score is not None else None,
@@ -133,6 +141,8 @@ class MLTracking:
                         task_type="classification" if metrics.get("is_classification") else "regression",
                         mode=str(params.get("mode") or job_params.get("mode") or ""),
                         goal=str(params.get("goal") or job_params.get("goal") or ""),
+                        preset_name=str(job_params.get("preset_name") or "") or None,
+                        summary_text=str(metrics.get("summary_text") or "") or None,
                     )
                     db.add(run)
         except Exception as e:

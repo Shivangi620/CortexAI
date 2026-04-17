@@ -16,9 +16,10 @@ from infra.storage import get_run_dir, get_model_path, get_metrics_path, get_sch
 from core.data_profiler import profile_dataset
 from core.health_score import compute_health_score
 from core.file_loader import SUPPORTED_EXTENSIONS, load_dataframe
-from services.training.preprocessing import auto_clean_data
+from services.data_sanitizer import sanitize_dataframe, build_dataset_version_report
 from services.studio_service import (
     build_lineage_graph,
+    compare_dataset_versions,
     get_workspace_snapshot,
     list_datasets,
     merge_preview,
@@ -65,9 +66,13 @@ def _persist_dataframe_as_csv(dataset_id: str, df):
     return csv_path
 
 
-def _build_dataset_response(dataset_id: str, df, source_type: str = "upload"):
+def _build_dataset_response(dataset_id: str, df, source_type: str = "upload", display_name: str | None = None, parent_dataset_id: str | None = None):
+    sanitized = sanitize_dataframe(df, dataset_name=display_name)
+    df = sanitized.df
     file_path = _persist_dataframe_as_csv(dataset_id, df)
     profile = profile_dataset(df)
+    profile["sanitizer"] = sanitized.report
+    profile["sanitizer_logs"] = sanitized.logs
 
     try:
         profile_json = json.dumps(profile)
@@ -81,6 +86,8 @@ def _build_dataset_response(dataset_id: str, df, source_type: str = "upload"):
                 file_path=file_path,
                 profile_json=profile_json,
                 source_type=source_type,
+                display_name=display_name,
+                parent_dataset_id=parent_dataset_id,
             )
         )
         db.commit()
@@ -92,10 +99,13 @@ def _build_dataset_response(dataset_id: str, df, source_type: str = "upload"):
         "preview_records": preview_records,
         "ingest_summary": {
             "source_type": source_type,
+            "display_name": display_name,
             "rows": int(len(df)),
             "columns": int(len(df.columns)),
             "column_names": list(df.columns),
         },
+        "sanitizer": sanitized.report,
+        "sanitizer_logs": sanitized.logs,
     }
 
 
@@ -316,7 +326,12 @@ async def upload_dataset(
         source_type = "database_import"
 
     try:
-        response = _build_dataset_response(dataset_id, df, source_type=source_type)
+        response = _build_dataset_response(
+            dataset_id,
+            df,
+            source_type=source_type,
+            display_name=filename,
+        )
     except Exception as e:
         for path in {uploaded_path, source_path}:
             if path and os.path.exists(path):
@@ -364,7 +379,12 @@ def import_from_source(req: SourceImportRequest):
 
     dataset_id = str(uuid4())
     try:
-        return _build_dataset_response(dataset_id, df, source_type=f"connector_{req.source_type}")
+        return _build_dataset_response(
+            dataset_id,
+            df,
+            source_type=f"connector_{req.source_type}",
+            display_name=f"{req.source_type}_import",
+        )
     except Exception as e:
         return {"error": f"Failed to save imported dataset: {e}"}
 
@@ -394,7 +414,13 @@ def create_dataset_from_ocr_review(dataset_id: str, req: OCRReviewRequest):
 
     new_dataset_id = str(uuid4())
     try:
-        response = _build_dataset_response(new_dataset_id, df, source_type="ocr_review")
+        response = _build_dataset_response(
+            new_dataset_id,
+            df,
+            source_type="ocr_review",
+            display_name="ocr_review.csv",
+            parent_dataset_id=dataset_id,
+        )
     except Exception as e:
         return {"error": f"Failed to create reviewed OCR dataset: {e}"}
 
@@ -412,6 +438,8 @@ class RepairPreviewRequest(BaseModel):
 
 @router.post("/repair-preview")
 def repair_preview(req: RepairPreviewRequest):
+    from services.training.preprocessing import auto_clean_data
+
     with get_db() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
         if not dataset:
@@ -447,6 +475,8 @@ class RepairApplyRequest(BaseModel):
 
 @router.post("/repair-apply")
 def repair_apply(req: RepairApplyRequest):
+    from services.training.preprocessing import auto_clean_data
+
     with get_db() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
         if not dataset:
@@ -465,7 +495,13 @@ def repair_apply(req: RepairApplyRequest):
     repaired_df, repair_logs = auto_clean_data(df, target_col)
     new_dataset_id = str(uuid4())
     try:
-        response = _build_dataset_response(new_dataset_id, repaired_df, source_type="repaired")
+        response = _build_dataset_response(
+            new_dataset_id,
+            repaired_df,
+            source_type="repaired",
+            display_name="repaired_dataset.csv",
+            parent_dataset_id=req.dataset_id,
+        )
     except Exception as e:
         return {"error": f"Failed to save repaired dataset: {e}"}
 
@@ -531,7 +567,12 @@ def merge_studio(req: MergeStudioRequest):
 
     new_dataset_id = str(uuid4())
     try:
-        response = _build_dataset_response(new_dataset_id, merged_df, source_type="merge_studio")
+        response = _build_dataset_response(
+            new_dataset_id,
+            merged_df,
+            source_type="merge_studio",
+            display_name="merged_dataset.csv",
+        )
     except Exception as e:
         return {"error": f"Failed to save merged dataset: {e}"}
 
@@ -604,8 +645,88 @@ def get_dataset_info(dataset_id: str):
 
 
 @router.get("/datasets")
-def get_datasets(limit: int = 100):
-    return {"datasets": list_datasets(limit=limit)}
+def get_datasets(limit: int = 100, include_archived: bool = False):
+    return {"datasets": list_datasets(limit=limit, include_archived=include_archived)}
+
+
+@router.post("/dataset/{dataset_id}/archive")
+def archive_dataset(dataset_id: str):
+    with get_db() as db:
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+        if not dataset:
+            return {"error": "Dataset not found"}
+        try:
+            profile = json.loads(dataset.profile_json) if dataset.profile_json else {}
+        except Exception:
+            profile = {}
+        profile["archived"] = True
+        dataset.profile_json = json.dumps(profile)
+        if not str(dataset.source_type or "").startswith("archived:"):
+            dataset.source_type = f"archived:{dataset.source_type or 'dataset'}"
+        db.commit()
+    return {"ok": True, "dataset_id": dataset_id}
+
+
+@router.post("/dataset/{dataset_id}/unarchive")
+def unarchive_dataset(dataset_id: str):
+    with get_db() as db:
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+        if not dataset:
+            return {"error": "Dataset not found"}
+        try:
+            profile = json.loads(dataset.profile_json) if dataset.profile_json else {}
+        except Exception:
+            profile = {}
+        profile["archived"] = False
+        dataset.profile_json = json.dumps(profile)
+        if str(dataset.source_type or "").startswith("archived:"):
+            dataset.source_type = str(dataset.source_type).split("archived:", 1)[-1] or "dataset"
+        db.commit()
+    return {"ok": True, "dataset_id": dataset_id}
+
+
+@router.delete("/dataset/{dataset_id}")
+def delete_dataset(dataset_id: str):
+    from infra.database import JobModel, ExperimentRun, DriftCheck, DriftSchedule, WorkspaceModel, NotificationModel
+
+    with get_db() as db:
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+        if not dataset:
+            return {"error": "Dataset not found"}
+        file_path = dataset.file_path
+
+        jobs = db.query(JobModel).filter(JobModel.dataset_id == dataset_id).all()
+        job_ids = [job.id for job in jobs]
+
+        if job_ids:
+            db.query(ExperimentRun).filter(ExperimentRun.dataset_id == dataset_id).delete(synchronize_session=False)
+            db.query(DriftCheck).filter(DriftCheck.dataset_id == dataset_id).delete(synchronize_session=False)
+            for job_id in job_ids:
+                db.query(DriftSchedule).filter(DriftSchedule.job_id == job_id).delete(synchronize_session=False)
+                db.query(NotificationModel).filter(NotificationModel.entity_id == job_id).delete(synchronize_session=False)
+            db.query(JobModel).filter(JobModel.dataset_id == dataset_id).delete(synchronize_session=False)
+
+        workspaces = db.query(WorkspaceModel).filter(WorkspaceModel.dataset_id == dataset_id).all()
+        for workspace in workspaces:
+            workspace.dataset_id = None
+            if workspace.last_job_id in job_ids:
+                workspace.last_job_id = None
+
+        db.delete(dataset)
+        db.commit()
+
+    try:
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception:
+        pass
+
+    return {"ok": True, "dataset_id": dataset_id, "deleted_jobs": len(job_ids)}
+
+
+@router.get("/dataset/{dataset_id}/versions")
+def dataset_versions(dataset_id: str, target_column: Optional[str] = None):
+    return compare_dataset_versions(dataset_id, target=target_column)
 
 
 @router.get("/workspace/latest")

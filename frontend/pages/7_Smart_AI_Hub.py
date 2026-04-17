@@ -227,6 +227,13 @@ with tab3:
 
         syn = st.session_state.get("synthetic_result")
         if syn and syn.get("new_dataset_id"):
+            judge_payload = {}
+            try:
+                judge_res = requests.get(f"{API_URL}/synthetic/judge/{syn['new_dataset_id']}", timeout=30)
+                judge_payload = judge_res.json() if judge_res.status_code == 200 else {"error": f"HTTP {judge_res.status_code}"}
+            except Exception as e:
+                judge_payload = {"error": str(e)}
+
             st.markdown("#### Generated Dataset")
             c1, c2, c3 = st.columns(3)
             c1.metric("Original Rows", syn.get("original_rows", 0))
@@ -258,6 +265,30 @@ with tab3:
                 {"Metric": "Suggested Target", "Original": original_profile.get("suggested_target"), "Augmented": new_profile.get("suggested_target")},
             ]
             render_safe_dataframe(pd.DataFrame(compare_rows), width="stretch", hide_index=True)
+
+            st.markdown("#### 🧪 Synthetic Quality Panel")
+            if judge_payload.get("error"):
+                st.info(judge_payload["error"])
+            else:
+                q1, q2, q3 = st.columns(3)
+                q1.metric("Realism Score", judge_payload.get("realism_score", "—"))
+                q2.metric("Verdict", judge_payload.get("verdict", "—"))
+                q3.metric("Rows Evaluated", judge_payload.get("rows_evaluated", "—"))
+                notes = judge_payload.get("notes", []) or []
+                if notes:
+                    for note in notes:
+                        st.caption(f"• {note}")
+                privacy_risk = "Review" if float(judge_payload.get("realism_score", 0) or 0) > 95 else "Low"
+                corr_match = "Strong" if float(judge_payload.get("realism_score", 0) or 0) >= 85 else "Moderate"
+                panel_df = pd.DataFrame(
+                    [
+                        {"Check": "Distributions", "Assessment": judge_payload.get("verdict", "—")},
+                        {"Check": "Correlations", "Assessment": corr_match},
+                        {"Check": "Target Behavior", "Assessment": "Aligned" if new_profile.get("suggested_target") == original_profile.get("suggested_target") else "Changed"},
+                        {"Check": "Privacy Similarity Risk", "Assessment": privacy_risk},
+                    ]
+                )
+                render_safe_dataframe(panel_df, width="stretch", hide_index=True)
 
             btn_col1, btn_col2 = st.columns(2)
             with btn_col1:

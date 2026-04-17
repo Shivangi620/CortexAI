@@ -33,6 +33,7 @@ if not st.session_state.get("job_id"):
     st.stop()
 
 job_id = st.session_state["job_id"]
+dataset_id = st.session_state.get("dataset_id")
 render_page_shell(
     title="Drift Monitor",
     eyebrow="Production Stability",
@@ -49,6 +50,20 @@ render_section_intro(
     "This page pairs detection, cadence management, history, and retraining so drift handling stays operational instead of fragmented.",
     "Upload a fresh batch for analysis, save review cadence, then promote drifted data into a retraining job when needed.",
 )
+
+if dataset_id:
+    version_payload = get_json(f"/dataset/{dataset_id}/versions")
+    st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+    st.markdown("### 🧾 Current Dataset vs Previous Version")
+    if version_payload.get("error"):
+        st.caption("Version comparison will appear once this workspace has an earlier dataset to compare against.")
+    else:
+        v1, v2, v3, v4 = st.columns(4)
+        v1.metric("Current Rows", version_payload.get("current_rows", "—"))
+        v2.metric("Previous Rows", version_payload.get("previous_rows", "—"))
+        v3.metric("Row Delta", version_payload.get("row_delta", "—"))
+        v4.metric("Added Columns", len(version_payload.get("added_columns", []) or []))
+    st.markdown("</div>", unsafe_allow_html=True)
 
 schedule_payload = get_json(f"/drift/{job_id}/schedule")
 

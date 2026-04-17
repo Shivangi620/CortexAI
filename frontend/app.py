@@ -1,6 +1,8 @@
 import streamlit as st
 
 from ui_shell import (
+    API_URL,
+    api_json,
     ensure_session_state,
     fetch_backend_overview,
     load_css,
@@ -49,6 +51,27 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+notifications_payload = api_json("/notifications", timeout=5)
+notifications = notifications_payload.get("notifications", []) if isinstance(notifications_payload, dict) else []
+st.markdown("### Notification Center", unsafe_allow_html=True)
+if notifications:
+    notice_cols = st.columns(min(3, len(notifications)))
+    for idx, item in enumerate(notifications[:3]):
+        level = (item.get("level") or "info").title()
+        notice_cols[idx].markdown(
+            f"""
+            <div class="glass-panel" style="min-height: 170px;">
+                <div class="section-label">{level}</div>
+                <div style="font-size:1.05rem; font-weight:700;">{item.get('title','Update')}</div>
+                <div style="margin-top:0.6rem; opacity:0.88;">{item.get('message','')}</div>
+                <div style="margin-top:0.75rem; font-size:0.78rem; opacity:0.65;">{(item.get('created_at') or '')[:19]}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+else:
+    st.caption("No notifications yet. Completed runs, failures, and drift alerts will appear here.")
 
 c1, c2, c3, c4 = st.columns(4)
 with c1:

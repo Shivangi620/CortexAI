@@ -12,6 +12,7 @@ from infra.result_contract import normalize_results
 from infra.storage import get_schema_path
 from api.routes.datasets import _stream_upload_to_file
 from core.file_loader import load_dataframe
+from services.data_sanitizer import sanitize_dataframe
 
 router = APIRouter(prefix="/api", tags=["predict"])
 
@@ -30,9 +31,11 @@ def _build_inference_frame(features: Dict[str, Any], expected_features: List[str
             raise ValueError(f"Unexpected features: {extra}")
 
         row = {name: features.get(name) for name in expected_features}
-        return pd.DataFrame([row], columns=expected_features)
+        frame = pd.DataFrame([row], columns=expected_features)
+    else:
+        frame = pd.DataFrame([features])
 
-    return pd.DataFrame([features])
+    return sanitize_dataframe(frame).df
 
 
 class PredictRequest(BaseModel):

@@ -1,8 +1,11 @@
 import streamlit as st
 import requests
+import pandas as pd
+import json
 
 from ui_shell import (
     API_URL,
+    clear_workspace_state,
     ensure_session_state,
     get_query_param,
     load_css,
@@ -25,6 +28,9 @@ st.session_state.setdefault("mode_choice", get_query_param("mode") or "⚖️ Ba
 st.session_state.setdefault("eval_metric_choice", get_query_param("metric") or "Accuracy")
 st.session_state.setdefault("handle_imbalance_choice", (get_query_param("imbalance") or "false").lower() == "true")
 st.session_state.setdefault("auto_clean_choice", (get_query_param("auto_clean") or "true").lower() == "true")
+st.session_state.setdefault("workspace_name_choice", get_query_param("workspace") or "Default Workspace")
+st.session_state.setdefault("preset_choice", get_query_param("preset") or "Balanced")
+st.session_state.setdefault("show_archived_datasets", False)
 try:
     default_cv_folds = int(get_query_param("cv_folds") or 0)
 except (TypeError, ValueError):
@@ -55,11 +61,90 @@ if st.session_state.get("_workspace_restored") and st.session_state.get("dataset
         """,
         unsafe_allow_html=True,
     )
+top_actions = st.columns([1, 1, 2])
+with top_actions[0]:
+    if st.session_state.get("dataset_id") and st.button("Remove Current Dataset", width="stretch"):
+        clear_workspace_state()
+        st.rerun()
+with top_actions[1]:
+    if st.session_state.get("_workspace_cleared"):
+        st.caption("Current device workspace cleared.")
 render_section_intro(
     "Workspace Flow",
     "Ingest data, confirm the prediction setup, and launch training.",
     "This page keeps the high-friction steps together: file upload, auto-detection, training preferences, advanced controls, and export options.",
 )
+
+@st.cache_data(show_spinner=False, ttl=20)
+def get_training_forecast_cached(payload_json: str):
+    payload = json.loads(payload_json)
+    forecast_res = requests.post(
+        f"{API_URL}/train/forecast",
+        json=payload,
+        timeout=20,
+    )
+    return forecast_res.json() if forecast_res.status_code == 200 else {}
+
+st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+st.markdown("### 🗂 Dataset Manager")
+manager_cols = st.columns([1.3, 0.7, 1])
+with manager_cols[0]:
+    include_archived = st.toggle("Show archived datasets", key="show_archived_datasets")
+with manager_cols[1]:
+    if st.button("Refresh Catalog", width="stretch"):
+        st.rerun()
+try:
+    datasets_payload = requests.get(
+        f"{API_URL}/datasets",
+        params={"limit": 50, "include_archived": include_archived},
+        timeout=15,
+    ).json()
+    dataset_catalog = datasets_payload.get("datasets", [])
+except Exception:
+    dataset_catalog = []
+
+if dataset_catalog:
+    dataset_options = {
+        f"{(item.get('display_name') or item.get('source_type') or 'dataset')} · {(item.get('rows') or 0)} rows · {(item.get('id') or '')[:8]}{' · archived' if item.get('archived') else ''}": item
+        for item in dataset_catalog
+    }
+    selected_dataset_label = st.selectbox("Dataset Catalog", options=list(dataset_options.keys()), key="dataset_manager_select")
+    selected_dataset = dataset_options.get(selected_dataset_label, {})
+    action_cols = st.columns(4)
+    with action_cols[0]:
+        if st.button("Load", width="stretch", key="dataset_manager_load") and selected_dataset.get("id"):
+            st.session_state["dataset_id"] = selected_dataset["id"]
+            try:
+                profile_resp = requests.get(f"{API_URL}/dataset/{selected_dataset['id']}", timeout=10)
+                profile_data = profile_resp.json() if profile_resp.status_code == 200 else {}
+                if not profile_data.get("error"):
+                    st.session_state["profile"] = profile_data
+            except Exception:
+                pass
+            st.session_state["_workspace_cleared"] = False
+            sync_workspace_query_params()
+            st.rerun()
+    with action_cols[1]:
+        archive_label = "Unarchive" if selected_dataset.get("archived") else "Archive"
+        if st.button(archive_label, width="stretch", key="dataset_manager_archive") and selected_dataset.get("id"):
+            endpoint = "unarchive" if selected_dataset.get("archived") else "archive"
+            requests.post(f"{API_URL}/dataset/{selected_dataset['id']}/{endpoint}", timeout=15)
+            st.rerun()
+    with action_cols[2]:
+        if st.button("Remove From Workspace", width="stretch", key="dataset_manager_clear"):
+            clear_workspace_state()
+            st.rerun()
+    with action_cols[3]:
+        if st.button("Delete Permanently", width="stretch", key="dataset_manager_delete") and selected_dataset.get("id"):
+            requests.delete(f"{API_URL}/dataset/{selected_dataset['id']}", timeout=20)
+            if st.session_state.get("dataset_id") == selected_dataset.get("id"):
+                clear_workspace_state()
+            st.rerun()
+    catalog_df = pd.DataFrame(dataset_catalog)
+    render_safe_dataframe(catalog_df[[c for c in ["display_name", "source_type", "rows", "cols", "created_at", "archived", "id"] if c in catalog_df.columns]], width="stretch", hide_index=True)
+else:
+    st.caption("No datasets in the catalog yet.")
+st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown("### Import Mode", unsafe_allow_html=True)
 import_mode = st.segmented_control(
@@ -470,6 +555,13 @@ if st.session_state.get('profile'):
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.markdown("### ⚙️ Training Configuration")
 
+    preset_defaults = {
+        "Fast": {"goal": "⚡ Speed(fast)", "mode": "⚡ Fast (Exploration only)", "cv": 3, "imbalance": False, "auto_clean": True},
+        "Balanced": {"goal": "⚖️ Balanced", "mode": "⚖️ Balanced (Standard optimization)", "cv": 5, "imbalance": False, "auto_clean": True},
+        "High Accuracy": {"goal": "🎯 Performance(best results)", "mode": "🧠 Full (Deep Bayesian Search)", "cv": 7, "imbalance": True, "auto_clean": True},
+        "Explainable": {"goal": "⚖️ Balanced", "mode": "⚖️ Balanced (Standard optimization)", "cv": 5, "imbalance": False, "auto_clean": True},
+        "Low Resource": {"goal": "⚡ Speed(fast)", "mode": "⚡ Fast (Exploration only)", "cv": 3, "imbalance": False, "auto_clean": True},
+    }
 
     columns = profile.get('columns', [])
     suggested_target = profile.get('suggested_target')
@@ -480,12 +572,61 @@ if st.session_state.get('profile'):
     st.info(f"💡 Auto-detected target column: **{suggested_target}**")
     target_col = st.selectbox("🎯 Confirm or Change Target Column", columns, index=default_idx)
 
+    sanitizer_report = profile.get("sanitizer", {}) or {}
+    sanitizer_logs = profile.get("sanitizer_logs", []) or []
+    if sanitizer_report:
+        san_cols = st.columns(4)
+        san_cols[0].metric("Rows After Cleanup", sanitizer_report.get("rows_after", rows))
+        san_cols[1].metric("Duplicates Removed", sanitizer_report.get("duplicate_rows_removed", 0))
+        san_cols[2].metric("Numeric Coercions", len(sanitizer_report.get("numeric_coercions", []) or []))
+        san_cols[3].metric("Datetime Columns", len(sanitizer_report.get("datetime_columns", []) or []))
+        if sanitizer_logs:
+            with st.expander("Shared Sanitizer Details", expanded=False):
+                for line in sanitizer_logs[:10]:
+                    st.caption(f"• {line}")
+
+    workspace_col, preset_col, resume_col = st.columns([1, 1, 0.8])
+    with workspace_col:
+        workspace_name = st.text_input("Workspace Name", key="workspace_name_choice")
+    with preset_col:
+        preset_name = st.selectbox(
+            "Training Preset",
+            options=list(preset_defaults.keys()),
+            key="preset_choice",
+            help="Reusable presets tune goal, mode, and validation defaults.",
+        )
+    with resume_col:
+        st.markdown("<div style='height: 1.9rem'></div>", unsafe_allow_html=True)
+        if st.button("Resume Last Run", width="stretch"):
+            try:
+                resume_payload = requests.get(f"{API_URL}/workspaces/resume", timeout=10).json()
+                if resume_payload.get("job_id"):
+                    st.session_state["job_id"] = resume_payload["job_id"]
+                    st.session_state["dataset_id"] = resume_payload.get("dataset_id")
+                    sync_workspace_query_params(workspace=workspace_name)
+                    st.switch_page("pages/4_Results_Console.py")
+                else:
+                    st.info(resume_payload.get("error", "No completed run available yet."))
+            except Exception as e:
+                st.error(f"Resume failed: {e}")
+
+    preset = preset_defaults.get(preset_name, preset_defaults["Balanced"])
+    goal = preset["goal"]
+    mode = preset["mode"]
+    if st.session_state.get("cv_folds_choice", 0) <= 1:
+        st.session_state["cv_folds_choice"] = preset["cv"]
+    if "handle_imbalance_choice" in st.session_state:
+        st.session_state["handle_imbalance_choice"] = st.session_state.get("handle_imbalance_choice", preset["imbalance"])
+    if "auto_clean_choice" in st.session_state:
+        st.session_state["auto_clean_choice"] = st.session_state.get("auto_clean_choice", preset["auto_clean"])
+
     col1, col2 = st.columns(2)
     with col1:
         goal = st.radio(
             "Select Goal",
             ["🎯 Performance(best results)", "⚡ Speed(fast)", "⚖️ Balanced"],
             key="goal_choice",
+            index=["🎯 Performance(best results)", "⚡ Speed(fast)", "⚖️ Balanced"].index(goal),
             help="Performance = widest model search | Speed = smaller fast pool | Balanced = strong middle ground"
         )
     with col2:
@@ -493,6 +634,7 @@ if st.session_state.get('profile'):
             "Select Execution Mode (V3)",
             ["⚡ Fast (Exploration only)", "⚖️ Balanced (Standard optimization)", "🧠 Full (Deep Bayesian Search)"],
             key="mode_choice",
+            index=["⚡ Fast (Exploration only)", "⚖️ Balanced (Standard optimization)", "🧠 Full (Deep Bayesian Search)"].index(mode),
             help="Fast = sweep only | Balanced = moderate optimization | Full = deeper Bayesian optimization"
         )
 
@@ -614,22 +756,23 @@ if st.session_state.get('profile'):
 
     forecast_payload = {}
     try:
-        forecast_res = requests.post(
-            f"{API_URL}/train/forecast",
-            json={
-                "dataset_id": st.session_state["dataset_id"],
-                "target_column": target_col,
-                "goal": goal_map.get(goal, "Performance"),
-                "mode": mode_map.get(mode, "Balanced"),
-                "eval_metric": eval_metric,
-                "selected_features": selected_features if selected_features else [],
-                "handle_imbalance": handle_imbalance,
-                "auto_clean": auto_clean,
-                "cv_folds": cv_folds,
-            },
-            timeout=20,
+        forecast_payload = get_training_forecast_cached(
+            json.dumps(
+                {
+                    "dataset_id": st.session_state["dataset_id"],
+                    "target_column": target_col,
+                    "goal": goal_map.get(goal, "Performance"),
+                    "mode": mode_map.get(mode, "Balanced"),
+                    "eval_metric": eval_metric,
+                    "selected_features": selected_features if selected_features else [],
+                    "handle_imbalance": handle_imbalance,
+                    "auto_clean": auto_clean,
+                    "cv_folds": cv_folds or preset["cv"],
+                    "preset_name": preset_name,
+                },
+                sort_keys=True,
+            )
         )
-        forecast_payload = forecast_res.json() if forecast_res.status_code == 200 else {}
     except Exception:
         forecast_payload = {}
 
@@ -652,6 +795,8 @@ if st.session_state.get('profile'):
         f"Advanced summary: metric `{eval_metric}` · imbalance `{handle_imbalance}` · auto-clean `{auto_clean}` · CV folds `{cv_folds}`"
     )
     sync_workspace_query_params(
+        workspace=workspace_name,
+        preset=preset_name,
         goal=goal,
         mode=mode,
         metric=eval_metric,
@@ -661,17 +806,41 @@ if st.session_state.get('profile'):
     )
 
     if st.button("▶ Run AutoML Engine", key="run_automl", width="stretch"):
+        workspace_id = ""
+        try:
+            workspace_resp = requests.post(
+                f"{API_URL}/workspaces",
+                json={
+                    "name": workspace_name,
+                    "dataset_id": st.session_state["dataset_id"],
+                    "settings": {
+                        "preset_name": preset_name,
+                        "goal": goal,
+                        "mode": mode,
+                        "eval_metric": eval_metric,
+                        "cv_folds": cv_folds or preset["cv"],
+                    },
+                },
+                timeout=10,
+            )
+            workspace_data = workspace_resp.json() if workspace_resp.status_code == 200 else {}
+            workspace_id = workspace_data.get("id", "")
+        except Exception:
+            workspace_id = ""
         payload = {
             "dataset_id": st.session_state['dataset_id'],
             "target_column": target_col,
             "goal": goal_map.get(goal, "Performance"),
             "mode": mode_map.get(mode, "Fast"),
+            "preset_name": preset_name,
+            "workspace_id": workspace_id,
+            "workspace_name": workspace_name,
             # Advanced options
             "eval_metric": eval_metric,
             "selected_features": selected_features if selected_features else [],
             "handle_imbalance": handle_imbalance,
             "auto_clean": auto_clean,
-            "cv_folds": cv_folds,
+            "cv_folds": cv_folds or preset["cv"],
             "export_model": export_model,
             "export_code": export_code,
             "export_report": export_report,
@@ -685,6 +854,8 @@ if st.session_state.get('profile'):
                 else:
                     st.session_state['job_id'] = data['job_id']
                     sync_workspace_query_params(
+                        workspace=workspace_name,
+                        preset=preset_name,
                         goal=goal,
                         mode=mode,
                         metric=eval_metric,
