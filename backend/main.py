@@ -9,9 +9,6 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from infra.logger import get_logger
-import httpx
-from fastapi import Request
-from fastapi.responses import StreamingResponse
 
 log = get_logger(__name__)
 csv.field_size_limit(int(1e9))
@@ -115,42 +112,7 @@ def health_check():
     return {"status": "ok", "version": "4.0.0"}
 
 
-# ── Streamlit Reverse Proxy ──────────────────────────────────────────────────
-# This catch-all route forwards any non-API requests to the Streamlit port (8001).
-STREAMLIT_URL = "http://localhost:8001"
 
-@app.api_route("/{path_name:path}", include_in_schema=False)
-async def _proxy_to_streamlit(request: Request, path_name: str):
-    # Skip if the path is explicitly an API route (though FastAPI should have caught it)
-    if path_name.startswith("api/") or path_name.startswith("docs") or path_name.startswith("redoc") or path_name.startswith("openapi.json"):
-        return {"error": "Not Found"}
-
-    target_url = f"{STREAMLIT_URL}/{path_name}"
-    if request.query_params:
-        target_url += f"?{request.query_params}"
-
-    async with httpx.AsyncClient() as client:
-        # Standard proxy logic
-        method = request.method
-        headers = dict(request.headers)
-        # We must remove host and adjust for the internal service
-        headers.pop("host", None)
-        
-        # Handle Streamlit's specific requirements (like websockets if needed, but simple HTTP first)
-        response = await client.request(
-            method,
-            target_url,
-            content=await request.body(),
-            headers=headers,
-            timeout=60.0,
-            follow_redirects=True,
-        )
-
-        return StreamingResponse(
-            response.aiter_bytes(),
-            status_code=response.status_code,
-            headers=dict(response.headers),
-        )
 
 
 if __name__ == "__main__":

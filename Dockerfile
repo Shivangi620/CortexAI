@@ -4,11 +4,15 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y \
     gcc g++ \
     redis-server \
+    nginx \
     && rm -rf /var/lib/apt/lists/*
+
+# Setup Nginx for non-root user
+RUN mkdir -p /var/lib/nginx /var/log/nginx /run/nginx && \
+    chown -R 1000:1000 /var/lib/nginx /var/log/nginx /run/nginx
 
 # 🚀 CRITICAL FOR HUGGING FACE SPACES 🚀
 # HF Spaces run as a non-root user (uid 1000)
-# We must create this user and set the home directory
 RUN useradd -m -u 1000 user
 USER user
 ENV HOME=/home/user \

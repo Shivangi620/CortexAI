@@ -14,7 +14,7 @@ from ui_shell import (
     render_workspace_banner,
 )
 
-API_URL = "http://localhost:7860/api"
+API_URL = "http://localhost:8000/api"
 
 st.set_page_config(page_title="Results Console - AutoML Studio", page_icon="📊", layout="wide")
 
