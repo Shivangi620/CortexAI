@@ -11,6 +11,7 @@ from ui_shell import (
     ensure_session_state,
     load_css,
     render_page_shell,
+    render_safe_dataframe,
     render_section_intro,
     render_workspace_banner,
 )
@@ -192,6 +193,23 @@ def build_failure_analysis(results, perf_warning, suggested_fixes, profile):
         items.append("Target imbalance is likely contributing to unstable class performance.")
     items.extend(suggested_fixes[:4])
     return items
+
+
+def coerce_feature_payload(feature_inputs):
+    processed = {}
+    for key, value in (feature_inputs or {}).items():
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if not value.strip():
+                continue
+            try:
+                processed[key] = float(value) if "." in value else int(value)
+            except ValueError:
+                processed[key] = value
+        else:
+            processed[key] = value
+    return processed
 
 load_css()
 ensure_session_state()
@@ -376,7 +394,7 @@ with performance_tab:
 
             lb_df = pd.DataFrame(leaderboard)
             lb_df["score"] = pd.to_numeric(lb_df["score"], errors="coerce")
-            st.dataframe(lb_df, width="stretch", hide_index=True)
+            render_safe_dataframe(lb_df, width="stretch", hide_index=True)
             chart_df = lb_df[["model", "score"]].dropna().set_index("model")
             if not chart_df.empty:
                 st.bar_chart(chart_df)
@@ -448,7 +466,7 @@ with performance_tab:
             for c in tested_df.columns
             if c not in existing_cols and c not in {"cheap_config", "best_params", "error"}
         ]
-        st.dataframe(tested_df[existing_cols + extra_cols], width="stretch", hide_index=True)
+        render_safe_dataframe(tested_df[existing_cols + extra_cols], width="stretch", hide_index=True)
 
         score_cols = [c for c in ["sweep_score", "best_cv_score", "holdout_score"] if c in tested_df.columns]
         if score_cols:
@@ -477,7 +495,7 @@ with analysis_tab:
         if shap_data:
             shap_df = pd.Series(shap_data).sort_values(ascending=False).rename("Importance")
             st.bar_chart(shap_df)
-            st.dataframe(
+            render_safe_dataframe(
                 shap_df.reset_index().rename(columns={"index": "Feature"}),
                 width="stretch",
                 hide_index=True,
@@ -502,7 +520,7 @@ with analysis_tab:
                 lambda value: value if isinstance(value, (int, float, bool, np.number)) or value is None else str(value)
             )
             st.markdown("#### Pipeline Metrics Table")
-            st.dataframe(process_df, width="stretch", hide_index=True)
+            render_safe_dataframe(process_df, width="stretch", hide_index=True)
 
         if eda_summary.get("pca_applied"):
             st.success(
@@ -525,6 +543,7 @@ with analysis_tab:
     )
     lineage = api_json(f"/lineage/{job_id}", timeout=20)
     drift_feature_timeline = api_json(f"/drift/{job_id}/feature-timeline", timeout=20)
+    dataset_lineage_graph = api_json(f"/dataset/{dataset_id}/lineage-graph", timeout=20) if dataset_id else {"error": "No dataset loaded."}
 
     with d1:
         st.markdown("### 🎯 Calibration Report")
@@ -534,7 +553,7 @@ with analysis_tab:
             st.metric("Brier Score", calibration.get("brier_score", "—"))
             bins_df = pd.DataFrame(calibration.get("bins", []))
             if not bins_df.empty:
-                st.dataframe(bins_df, width="stretch", hide_index=True)
+                render_safe_dataframe(bins_df, width="stretch", hide_index=True)
                 chart_df = bins_df.rename(
                     columns={
                         "mean_predicted": "Mean Predicted",
@@ -555,7 +574,7 @@ with analysis_tab:
             cols[3].metric("F1", f"{best_threshold.get('f1', 0)}%")
             threshold_df = pd.DataFrame(thresholds.get("thresholds", []))
             if not threshold_df.empty:
-                st.dataframe(threshold_df, width="stretch", hide_index=True)
+                render_safe_dataframe(threshold_df, width="stretch", hide_index=True)
                 threshold_chart = threshold_df.copy()
                 for col in ["precision", "recall", "f1"]:
                     if col in threshold_chart.columns:
@@ -574,11 +593,24 @@ with analysis_tab:
             st.metric("Transformed Features", lineage.get("count", 0))
             lineage_df = pd.DataFrame(lineage.get("lineage", []))
             if not lineage_df.empty:
-                st.dataframe(lineage_df, width="stretch", hide_index=True)
+                render_safe_dataframe(lineage_df, width="stretch", hide_index=True)
                 transform_counts = (
                     lineage_df["transform_group"].value_counts().rename_axis("Transform").to_frame("Count")
                 )
                 st.bar_chart(transform_counts)
+
+        st.markdown("### 🧬 Dataset Lineage Snapshot")
+        if dataset_lineage_graph.get("error"):
+            st.info(dataset_lineage_graph["error"])
+        else:
+            nodes = dataset_lineage_graph.get("nodes", [])
+            edges = dataset_lineage_graph.get("edges", [])
+            l1, l2, l3 = st.columns(3)
+            l1.metric("Versions", len(nodes))
+            l2.metric("Transitions", len(edges))
+            l3.metric("Current Source", (nodes[-1].get("source_type", "—") if nodes else "—"))
+            if nodes:
+                render_safe_dataframe(pd.DataFrame(nodes), width="stretch", hide_index=True)
 
         st.markdown("### 💡 Recommendations")
         recommendation_items = recommendations.get("recommendations", [])
@@ -596,7 +628,7 @@ with analysis_tab:
             if trust_df.empty:
                 st.info("Trust heatmap is still warming up. More historical runs improve this panel.")
             else:
-                st.dataframe(trust_df, width="stretch", hide_index=True)
+                render_safe_dataframe(trust_df, width="stretch", hide_index=True)
                 trust_counts = trust_df["status"].value_counts().rename_axis("Status").to_frame("Features")
                 st.bar_chart(trust_counts)
 
@@ -627,13 +659,29 @@ with analysis_tab:
                     c for c in ["created_at", "uploaded_name", "feature", "psi", "ks_p_value", "severity", "drift_detected", "current_mean", "baseline_mean"]
                     if c in filtered_timeline.columns
                 ]
-                st.dataframe(filtered_timeline[display_cols], width="stretch", hide_index=True)
+                render_safe_dataframe(filtered_timeline[display_cols], width="stretch", hide_index=True)
                 if "psi" in filtered_timeline.columns:
                     psi_chart = filtered_timeline[["created_at", "psi"]].copy().set_index("created_at")
                     psi_chart["psi"] = pd.to_numeric(psi_chart["psi"], errors="coerce")
                     if not psi_chart.dropna().empty:
                         st.line_chart(psi_chart.rename(columns={"psi": "PSI"}))
-    st.info("Scenario simulator is available in Smart AI Hub and pairs well with this page for controlled what-if testing.")
+    reproducibility = results.get("reproducibility_snapshot", {}) or {}
+    st.markdown("### ♻️ Reproducibility Snapshot")
+    if reproducibility:
+        rp1, rp2, rp3, rp4 = st.columns(4)
+        rp1.metric("Schema Hash", (reproducibility.get("schema_hash") or "—")[:10])
+        rp2.metric("CV Folds", reproducibility.get("cv_folds_used", 0))
+        rp3.metric("Auto Clean", "On" if reproducibility.get("auto_clean") else "Off")
+        rp4.metric("Imbalance", "On" if reproducibility.get("handle_imbalance") else "Off")
+        st.caption(
+            f"Seed: {reproducibility.get('train_test_split_random_state', '—')} · "
+            f"Selected features: {reproducibility.get('selected_feature_count', '—')}"
+        )
+        package_versions = reproducibility.get("package_versions", {})
+        if package_versions:
+            st.json(package_versions, expanded=False)
+    else:
+        st.info("Reproducibility metadata is not available for this run.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 with process_tab:
@@ -706,8 +754,9 @@ with process_tab:
 
 with playground_tab:
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
-    st.markdown("### 🧪 Scenario Playground")
+    st.markdown("### 🎛️ Live What-If Simulator")
     st.caption("Use profile-aware defaults and interactive controls to test what happens when feature values move.")
+    live_update = st.toggle("Auto-update prediction and explanation", value=True, key="results_live_whatif")
 
     st.markdown("#### 🧩 Feature Contract Checker")
     if contract_check["status"] == "Aligned":
@@ -752,7 +801,7 @@ with playground_tab:
                 st.caption(f"Extra columns: {', '.join(uploaded_contract_check['extra_columns'][:12])}")
             dtype_rows = uploaded_contract_check.get("dtype_mismatches", [])
             if dtype_rows:
-                st.dataframe(dtype_rows, width="stretch", hide_index=True)
+                render_safe_dataframe(dtype_rows, width="stretch", hide_index=True)
 
     if not feature_names:
         st.warning("Feature metadata missing.")
@@ -796,63 +845,76 @@ with playground_tab:
                 s_max = s_min + 1
             sim_steps = st.slider("Scenario steps", min_value=3, max_value=20, value=8, key="scenario_steps")
 
-        if st.button("🔮 Run Prediction", key="predict_run", width="stretch"):
-            processed = {}
-            for key, value in feature_inputs.items():
-                if value is None:
-                    continue
-                if isinstance(value, str):
-                    if not value.strip():
-                        continue
-                    try:
-                        processed[key] = float(value) if "." in value else int(value)
-                    except ValueError:
-                        processed[key] = value
-                else:
-                    processed[key] = value
+        processed = coerce_feature_payload(feature_inputs)
+        manual_predict = st.button("🔮 Run Prediction", key="predict_run", width="stretch")
+        if processed and (live_update or manual_predict):
+            try:
+                p_res = requests.post(
+                    f"{API_URL}/predict/{job_id}",
+                    json={"features": processed},
+                    timeout=20,
+                )
+                p_data = p_res.json() if p_res.status_code == 200 else {"error": f"HTTP {p_res.status_code}"}
+            except Exception as e:
+                p_data = {"error": str(e)}
 
-            if processed:
-                try:
-                    p_res = requests.post(
-                        f"{API_URL}/predict/{job_id}",
-                        json={"features": processed},
-                        timeout=20,
-                    )
-                    if p_res.status_code == 200:
-                        p_data = p_res.json()
-                        st.success(f"🎯 **Predicted: {p_data['prediction']}**")
-                        if "probabilities" in p_data:
-                            probs_df = pd.DataFrame(
-                                list((p_data.get("probabilities") or {}).items()),
-                                columns=["Class", "Probability"],
-                            )
-                            if not probs_df.empty:
-                                probs_df["Probability"] = pd.to_numeric(
-                                    probs_df["Probability"], errors="coerce"
-                                )
-                                st.dataframe(probs_df, width="stretch", hide_index=True)
-                                st.bar_chart(probs_df.set_index("Class"))
-                    else:
-                        st.error("Prediction failed.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+            try:
+                ex_res = requests.post(
+                    f"{API_URL}/explain/{job_id}",
+                    json={"features": processed},
+                    timeout=30,
+                )
+                ex_data = ex_res.json() if ex_res.status_code == 200 else {"error": f"HTTP {ex_res.status_code}"}
+            except Exception as e:
+                ex_data = {"error": str(e)}
+
+            if p_data.get("error"):
+                st.error(f"Prediction failed: {p_data['error']}")
             else:
-                st.info("Add at least one feature value to run a prediction.")
+                live_cols = st.columns(3)
+                live_cols[0].metric("Prediction", p_data.get("prediction", "—"))
+                live_cols[1].metric("Confidence", f"{p_data.get('confidence_pct', '—')}%")
+                top_feature = None
+                top_contribs = ex_data.get("feature_contributions", {}) or {}
+                if top_contribs:
+                    top_feature = max(top_contribs.items(), key=lambda item: abs(float(item[1] or 0)))[0]
+                live_cols[2].metric("Top Driver", top_feature or "—")
+
+                if "probabilities" in p_data:
+                    probs_df = pd.DataFrame(
+                        list((p_data.get("probabilities") or {}).items()),
+                        columns=["Class", "Probability"],
+                    )
+                    if not probs_df.empty:
+                        probs_df["Probability"] = pd.to_numeric(
+                            probs_df["Probability"], errors="coerce"
+                        )
+                        render_safe_dataframe(probs_df, width="stretch", hide_index=True)
+                        st.bar_chart(probs_df.set_index("Class"))
+
+                if ex_data.get("error"):
+                    st.info(f"Local explanation unavailable: {ex_data['error']}")
+                else:
+                    contribs = ex_data.get("feature_contributions", {}) or {}
+                    if contribs:
+                        contrib_df = (
+                            pd.Series(contribs)
+                            .sort_values(key=lambda s: s.abs(), ascending=False)
+                            .head(12)
+                            .rename("Contribution")
+                            .to_frame()
+                        )
+                        st.markdown("#### Local Feature Contributions")
+                        render_safe_dataframe(
+                            contrib_df.reset_index().rename(columns={"index": "Feature"}),
+                            width="stretch",
+                            hide_index=True,
+                        )
+                        st.bar_chart(contrib_df)
+        elif manual_predict:
+            st.info("Add at least one feature value to run a prediction.")
 
         if results.get("is_classification") and st.button("↔️ Generate Counterfactual", key="counterfactual_run", width="stretch"):
-            processed = {}
-            for key, value in feature_inputs.items():
-                if value is None:
-                    continue
-                if isinstance(value, str):
-                    if not value.strip():
-                        continue
-                    try:
-                        processed[key] = float(value) if "." in value else int(value)
-                    except ValueError:
-                        processed[key] = value
-                else:
-                    processed[key] = value
             if processed:
                 try:
                     cf_res = requests.post(
@@ -871,7 +933,7 @@ with playground_tab:
                     st.caption(cf_payload.get("message", ""))
                     suggestions = cf_payload.get("suggestions", [])
                     if suggestions:
-                        st.dataframe(pd.DataFrame(suggestions), width="stretch", hide_index=True)
+                        render_safe_dataframe(pd.DataFrame(suggestions), width="stretch", hide_index=True)
                     else:
                         st.info("No one-step flip was found for the current feature values.")
 
@@ -894,9 +956,12 @@ with playground_tab:
                     sim_df = pd.DataFrame([row for row in sim_data if "error" not in row])
                     if not sim_df.empty:
                         st.markdown("#### Scenario Results")
-                        st.dataframe(sim_df, width="stretch", hide_index=True)
+                        render_safe_dataframe(sim_df, width="stretch", hide_index=True)
                         chart_df = sim_df.rename(columns={"x": sim_feature, "prediction": "Prediction"}).set_index(sim_feature)
                         st.line_chart(chart_df[["Prediction"]])
+                        if "confidence" in sim_df.columns and sim_df["confidence"].notna().any():
+                            confidence_df = sim_df.rename(columns={"x": sim_feature, "confidence": "Confidence"}).set_index(sim_feature)
+                            st.area_chart(confidence_df[["Confidence"]])
                     else:
                         st.info("No valid scenario points were returned.")
                 else:
@@ -986,7 +1051,7 @@ with augmentation_tab:
                 preview = syn.get("preview") or []
                 if preview:
                     st.markdown("#### Preview")
-                    st.dataframe(pd.DataFrame(preview), width="stretch", hide_index=True)
+                    render_safe_dataframe(pd.DataFrame(preview), width="stretch", hide_index=True)
 
                 compare_rows = [
                     {"Metric": "Rows", "Original": (syn.get("original_profile") or {}).get("rows"), "Augmented": (syn.get("profile") or {}).get("rows")},
@@ -995,7 +1060,7 @@ with augmentation_tab:
                     {"Metric": "Suggested Target", "Original": (syn.get("original_profile") or {}).get("suggested_target"), "Augmented": (syn.get("profile") or {}).get("suggested_target")},
                 ]
                 st.markdown("#### Original vs Augmented")
-                st.dataframe(pd.DataFrame(compare_rows), width="stretch", hide_index=True)
+                render_safe_dataframe(pd.DataFrame(compare_rows), width="stretch", hide_index=True)
 
                 load_col, inspect_col = st.columns(2)
                 with load_col:

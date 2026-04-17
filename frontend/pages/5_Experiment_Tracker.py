@@ -6,8 +6,10 @@ from ui_shell import (
     ensure_session_state,
     load_css,
     render_page_shell,
+    render_safe_dataframe,
     render_section_intro,
     render_workspace_banner,
+    sync_workspace_query_params,
 )
 
 
@@ -143,6 +145,15 @@ selected_run = run_lookup.get(selected_run_label, {}) if selected_run_label else
 selected_job_id = selected_run.get("job_id")
 
 if selected_job_id:
+    jump_col, _ = st.columns([0.45, 0.55])
+    with jump_col:
+        if st.button("Load This Run Into Workspace", width="stretch", key=f"load_run_{selected_run.get('id')}"):
+            st.session_state["job_id"] = selected_job_id
+            if selected_run.get("dataset_id"):
+                st.session_state["dataset_id"] = selected_run.get("dataset_id")
+            sync_workspace_query_params()
+            st.success("Workspace updated with the selected run.")
+
     status_payload = api_json(f"/status/{selected_job_id}", timeout=10)
     registry_payload = api_json(f"/experiments/{selected_run.get('id')}/registry", timeout=10)
     notes_payload = api_json(f"/notes/run/{selected_run.get('id')}", timeout=10)
@@ -158,7 +169,7 @@ if selected_job_id:
             if history_df.empty:
                 st.info("No timeline recorded for this run.")
             else:
-                st.dataframe(history_df, width="stretch", hide_index=True)
+                render_safe_dataframe(history_df, width="stretch", hide_index=True)
 
         with hist_right:
             st.metric("History Events", len(history))
@@ -276,7 +287,7 @@ for e in filtered[:50]:
 
 df_table = pd.DataFrame(table_rows)
 display_df = df_table.drop(columns=["_id"])
-st.dataframe(display_df, width="stretch", hide_index=True)
+render_safe_dataframe(display_df, width="stretch", hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ── Compare selected ──────────────────────────────────────────────────────────
@@ -318,7 +329,7 @@ if selected_labels and len(selected_labels) >= 2:
                 "F1": f"{m.get('f1', '—')}%" if m.get("f1") else "—",
             })
 
-        st.dataframe(pd.DataFrame(cmp_rows), width="stretch", hide_index=True)
+        render_safe_dataframe(pd.DataFrame(cmp_rows), width="stretch", hide_index=True)
 
         # Bar chart comparison
         chart_df = pd.DataFrame({
@@ -355,7 +366,7 @@ if selected_labels and len(selected_labels) >= 2:
         arena_df = pd.DataFrame(arena_rows).set_index("Model")
         if not arena_df.empty:
             st.bar_chart(arena_df[["Score", "Precision", "Recall", "F1"]])
-            st.dataframe(arena_df, width="stretch")
+            render_safe_dataframe(arena_df, width="stretch")
             st.caption("Compare up to four runs at once to spot the strongest trade-offs across score and classification quality.")
 
         if len(cmp_data) >= 2:
@@ -398,14 +409,14 @@ if selected_labels and len(selected_labels) >= 2:
                         if config_df.empty:
                             st.info("No config changes detected.")
                         else:
-                            st.dataframe(config_df, width="stretch", hide_index=True)
+                            render_safe_dataframe(config_df, width="stretch", hide_index=True)
                     with diff_tabs[1]:
                         st.markdown("**Output Changes**")
                         output_df = pd.DataFrame(diff_payload.get("output_changes", []))
                         if output_df.empty:
                             st.info("No output changes detected.")
                         else:
-                            st.dataframe(output_df, width="stretch", hide_index=True)
+                            render_safe_dataframe(output_df, width="stretch", hide_index=True)
 else:
     st.info("Select 2 to 5 runs to unlock side-by-side comparison and the battle arena.")
 

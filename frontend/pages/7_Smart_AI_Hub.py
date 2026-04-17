@@ -7,8 +7,10 @@ from ui_shell import (
     ensure_session_state,
     load_css,
     render_page_shell,
+    render_safe_dataframe,
     render_section_intro,
     render_workspace_banner,
+    sync_workspace_query_params,
 )
 
 st.set_page_config(page_title="Smart AI Hub - AutoML Studio", page_icon="🤖", layout="wide")
@@ -80,6 +82,7 @@ with tab1:
                         e_data = e_res.json()
                         if e_data.get("job_id"):
                             st.session_state["job_id"] = e_data["job_id"]
+                            sync_workspace_query_params()
                         st.success("Ensemble created successfully.")
                         if e_data.get("job_id"):
                             st.page_link("pages/4_Results_Console.py", label="Open Ensemble Results", icon="📊")
@@ -181,7 +184,7 @@ with tab2:
 
                         if valid_rows:
                             sim_df = pd.DataFrame(valid_rows)
-                            st.dataframe(sim_df, width="stretch", hide_index=True)
+                            render_safe_dataframe(sim_df, width="stretch", hide_index=True)
 
                             chart_df = sim_df.rename(
                                 columns={"x": sweep_feature, "prediction": "Prediction"}
@@ -202,7 +205,7 @@ with tab2:
 
                         if error_rows:
                             st.warning("Some simulation points failed.")
-                            st.dataframe(pd.DataFrame(error_rows), width="stretch", hide_index=True)
+                            render_safe_dataframe(pd.DataFrame(error_rows), width="stretch", hide_index=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 with tab3:
@@ -232,7 +235,7 @@ with tab3:
 
             preview = syn.get("preview") or []
             if preview:
-                st.dataframe(pd.DataFrame(preview), width="stretch", hide_index=True)
+                render_safe_dataframe(pd.DataFrame(preview), width="stretch", hide_index=True)
 
             st.markdown("#### 📊 Synthetic vs Original Comparison")
             original_profile = syn.get("original_profile") or profile
@@ -254,7 +257,7 @@ with tab3:
                 {"Metric": "Missing %", "Original": original_profile.get("missing_pct"), "Augmented": new_profile.get("missing_pct")},
                 {"Metric": "Suggested Target", "Original": original_profile.get("suggested_target"), "Augmented": new_profile.get("suggested_target")},
             ]
-            st.dataframe(pd.DataFrame(compare_rows), width="stretch", hide_index=True)
+            render_safe_dataframe(pd.DataFrame(compare_rows), width="stretch", hide_index=True)
 
             btn_col1, btn_col2 = st.columns(2)
             with btn_col1:

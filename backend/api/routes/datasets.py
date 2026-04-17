@@ -19,6 +19,7 @@ from core.file_loader import SUPPORTED_EXTENSIONS, load_dataframe
 from services.training.preprocessing import auto_clean_data
 from services.studio_service import (
     build_lineage_graph,
+    get_workspace_snapshot,
     list_datasets,
     merge_preview,
 )
@@ -507,6 +508,16 @@ def merge_studio(req: MergeStudioRequest):
         return {"error": f"Right join key '{req.join_key_right}' is not present in the right dataset."}
 
     join_type = req.join_type if req.join_type in {"inner", "left", "right", "outer"} else "inner"
+    left_dtype = str(left_df[req.join_key_left].dtype)
+    right_dtype = str(right_df[req.join_key_right].dtype)
+    key_coerced = False
+    if left_dtype != right_dtype:
+        left_df = left_df.copy()
+        right_df = right_df.copy()
+        left_df[req.join_key_left] = left_df[req.join_key_left].astype("string")
+        right_df[req.join_key_right] = right_df[req.join_key_right].astype("string")
+        key_coerced = True
+
     merged_df = pd.merge(
         left_df,
         right_df,
@@ -536,6 +547,9 @@ def merge_studio(req: MergeStudioRequest):
         "merged_rows": int(len(merged_df)),
         "left_key": req.join_key_left,
         "right_key": req.join_key_right,
+        "join_key_coerced_to_string": key_coerced,
+        "left_key_dtype": left_dtype,
+        "right_key_dtype": right_dtype,
     }
     return response
 
@@ -559,13 +573,16 @@ def merge_studio_preview(req: MergeStudioRequest):
     if req.join_key_right not in right_df.columns:
         return {"error": f"Right join key '{req.join_key_right}' is not present in the right dataset."}
 
-    preview = merge_preview(
-        left_df=left_df,
-        right_df=right_df,
-        left_key=req.join_key_left,
-        right_key=req.join_key_right,
-        join_type=req.join_type,
-    )
+    try:
+        preview = merge_preview(
+            left_df=left_df,
+            right_df=right_df,
+            left_key=req.join_key_left,
+            right_key=req.join_key_right,
+            join_type=req.join_type,
+        )
+    except Exception as e:
+        return {"error": f"Could not build merge preview: {e}"}
     preview["join_type"] = req.join_type
     preview["left_dataset_id"] = req.left_dataset_id
     preview["right_dataset_id"] = req.right_dataset_id
@@ -589,6 +606,19 @@ def get_dataset_info(dataset_id: str):
 @router.get("/datasets")
 def get_datasets(limit: int = 100):
     return {"datasets": list_datasets(limit=limit)}
+
+
+@router.get("/workspace/latest")
+def get_latest_workspace():
+    return get_workspace_snapshot()
+
+
+@router.get("/workspace/restore")
+def restore_workspace(dataset_id: Optional[str] = None, job_id: Optional[str] = None):
+    snapshot = get_workspace_snapshot(dataset_id=dataset_id, job_id=job_id)
+    if not snapshot.get("dataset") and not snapshot.get("job"):
+        return {"error": "No persisted workspace found"}
+    return snapshot
 
 
 # ── Health score ───────────────────────────────────────────────────────────────

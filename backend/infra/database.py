@@ -134,6 +134,10 @@ class DriftSchedule(Base):
     job_id = Column(String, index=True)
     enabled = Column(String, nullable=True, default="true")
     frequency_days = Column(String, nullable=True, default="7")
+    warning_threshold = Column(String, nullable=True, default="0.1")
+    critical_threshold = Column(String, nullable=True, default="0.2")
+    last_alert_status = Column(String, nullable=True)
+    last_alert_summary = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -183,6 +187,10 @@ def _run_migrations():
         "ALTER TABLE datasets ADD COLUMN created_at DATETIME",
         "ALTER TABLE datasets ADD COLUMN parent_dataset_id TEXT",
         "ALTER TABLE datasets ADD COLUMN source_type TEXT",
+        "ALTER TABLE drift_schedules ADD COLUMN warning_threshold TEXT",
+        "ALTER TABLE drift_schedules ADD COLUMN critical_threshold TEXT",
+        "ALTER TABLE drift_schedules ADD COLUMN last_alert_status TEXT",
+        "ALTER TABLE drift_schedules ADD COLUMN last_alert_summary TEXT",
         """CREATE TABLE IF NOT EXISTS meta_learning (
             id                 TEXT PRIMARY KEY,
             meta_features_json TEXT NOT NULL,
@@ -225,6 +233,10 @@ def _run_migrations():
             job_id          TEXT,
             enabled         TEXT,
             frequency_days  TEXT,
+            warning_threshold TEXT,
+            critical_threshold TEXT,
+            last_alert_status TEXT,
+            last_alert_summary TEXT,
             created_at      DATETIME,
             updated_at      DATETIME
         )""",

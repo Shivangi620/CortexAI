@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 import shap
 import optuna
+import json
+import platform
+import sys
 from typing import Any, Dict
 from sklearn.model_selection import (
     train_test_split,
@@ -33,7 +36,8 @@ except Exception:
 from core.pipeline_engine import PipelineComponent, PipelineContext, PipelineStep
 from core.feature_engine import ManagedFeatureEngine
 from core.integrations import MLTracking
-from infra.storage import ModelRegistry, DataContract, get_model_path, save_metrics
+from infra.database import DatasetModel, get_db
+from infra.storage import ModelRegistry, DataContract, get_model_path, get_schema_path, save_metrics
 from services.training.preprocessing import (
     make_lite_preprocessor,
     make_preprocessor,
@@ -688,6 +692,26 @@ class EvaluationComponent(PipelineComponent):
     def get_step_type(self) -> PipelineStep:
         return PipelineStep.EVALUATE
 
+    def _package_versions(self) -> Dict[str, Any]:
+        versions = {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "pandas": getattr(pd, "__version__", None),
+            "numpy": getattr(np, "__version__", None),
+            "scikit_learn": getattr(__import__("sklearn"), "__version__", None),
+            "xgboost": getattr(__import__("xgboost"), "__version__", None),
+            "optuna": getattr(optuna, "__version__", None),
+            "shap": getattr(shap, "__version__", None),
+            "lightgbm": None,
+        }
+        try:
+            import lightgbm as lgb
+
+            versions["lightgbm"] = getattr(lgb, "__version__", None)
+        except Exception:
+            versions["lightgbm"] = "not_installed"
+        return versions
+
     def execute(self, ctx: PipelineContext):
         preds = ctx.final_model.predict(ctx.X_test)
         execution_profile = getattr(
@@ -783,6 +807,37 @@ class EvaluationComponent(PipelineComponent):
 
         ctx.leaderboard = lb
 
+        schema_hash = None
+        schema_snapshot = {}
+        try:
+            schema_path = get_schema_path(ctx.job_id)
+            with open(schema_path, "r", encoding="utf-8") as handle:
+                schema_snapshot = json.load(handle)
+            schema_hash = schema_snapshot.get("hash")
+        except Exception:
+            schema_snapshot = {}
+
+        with get_db() as db:
+            dataset_row = db.query(DatasetModel).filter(DatasetModel.id == ctx.dataset_id).first()
+
+        reproducibility = {
+            "job_id": ctx.job_id,
+            "dataset_id": ctx.dataset_id,
+            "parent_dataset_id": dataset_row.parent_dataset_id if dataset_row else None,
+            "dataset_source_type": dataset_row.source_type if dataset_row else None,
+            "schema_hash": schema_hash,
+            "selected_features": list(ctx.config.get("selected_features") or []),
+            "selected_feature_count": len(ctx.config.get("selected_features") or []) or len(ctx.num_cols + ctx.cat_cols),
+            "auto_clean": bool(ctx.config.get("auto_clean", True)),
+            "handle_imbalance": bool(ctx.config.get("handle_imbalance", False)),
+            "cv_folds_used": int(ctx.config.get("cv_folds", 0) or 0),
+            "eval_metric_requested": ctx.config.get("eval_metric") or ("Accuracy" if ctx.is_classification else "R²"),
+            "train_test_split_random_state": 42,
+            "stability_seeds": [42, 123, 999],
+            "schema_column_count": len((schema_snapshot.get("schema") or {}).keys()),
+            "package_versions": self._package_versions(),
+        }
+
         metadata = {
             "task_type": "classification" if ctx.is_classification else "regression",
             "eval_metric_requested": ctx.config.get("eval_metric")
@@ -795,6 +850,7 @@ class EvaluationComponent(PipelineComponent):
             ),
             "feature_names": ctx.num_cols + ctx.cat_cols,
             "pca_applied": False,
+            "reproducibility": reproducibility,
         }
 
         pca_components_used = None
@@ -830,6 +886,12 @@ class EvaluationComponent(PipelineComponent):
             "mode": ctx.mode,
             "execution_profile": execution_profile,
             "tested_models": ctx.tested_models,
+            "reproducibility_snapshot": reproducibility,
+            "dataset_lineage_snapshot": {
+                "dataset_id": ctx.dataset_id,
+                "parent_dataset_id": dataset_row.parent_dataset_id if dataset_row else None,
+                "source_type": dataset_row.source_type if dataset_row else None,
+            },
         }
         save_metrics(ctx.job_id, ctx.metrics)
 

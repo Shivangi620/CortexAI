@@ -14,10 +14,13 @@ def get_drift_dashboard(
     feature_names: List[str],
     target_name: str = None,
     timestamp: str = None,
-    baseline_version: str = "v1.0"
+    baseline_version: str = "v1.0",
+    warning_threshold: float | None = None,
+    critical_threshold: float | None = None,
 ) -> Dict[str, Any]:
     from core.drift_detector import DriftDetector
     from datetime import datetime
+    from infra.config import settings
 
     feature_drift: List[Dict[str, Any]] = []
     drifted_features: List[str] = []
@@ -31,6 +34,16 @@ def get_drift_dashboard(
         cols_to_check = []
 
     concept_drift_detected = False
+    warning_threshold = (
+        float(warning_threshold)
+        if warning_threshold is not None
+        else float(settings.psi_warning_threshold)
+    )
+    critical_threshold = (
+        float(critical_threshold)
+        if critical_threshold is not None
+        else float(settings.psi_critical_threshold)
+    )
 
     for col in cols_to_check:
         col_stats = baseline_stats.get(col, {}) if isinstance(baseline_stats, dict) else {}
@@ -87,15 +100,13 @@ def get_drift_dashboard(
             except Exception:
                 psi = 0.0
 
-            from infra.config import settings
-
             is_drifted = False
 
-            if psi >= settings.psi_critical_threshold or p_val < settings.ks_p_threshold:
+            if psi >= critical_threshold or p_val < settings.ks_p_threshold:
                 entry["drift_detected"] = True
                 is_drifted = True
 
-                if psi >= settings.psi_critical_threshold:
+                if psi >= critical_threshold:
                     entry["severity"] = "🔴 Critical Drift"
                     critical_features.append(col)
                 else:
@@ -103,7 +114,7 @@ def get_drift_dashboard(
 
                 drifted_features.append(col)
 
-            elif psi >= settings.psi_warning_threshold:
+            elif psi >= warning_threshold:
                 entry["severity"] = "🟡 Moderate Drift"
                 entry["drift_detected"] = True
                 is_drifted = True
@@ -147,6 +158,21 @@ def get_drift_dashboard(
     elif drifted_features:
         alert_message = f"Moderate data drift in: {', '.join(drifted_features[:5])}"
 
+    alert_level = (
+        "critical"
+        if critical_features
+        else "warning"
+        if drifted_features
+        else "stable"
+    )
+    recommended_action = (
+        "Retrain soon and review the affected features before promoting new predictions."
+        if critical_features
+        else "Monitor closely and schedule a fresh drift check after the next data refresh."
+        if drifted_features
+        else "No urgent action is needed. Continue with the saved review cadence."
+    )
+
     return {
         "timestamp": timestamp,
         "baseline_version": baseline_version,
@@ -156,6 +182,18 @@ def get_drift_dashboard(
         "drifted_features": list(set(drifted_features)),
         "critical_features": critical_features,
         "alert_message": alert_message,
+        "alert_level": alert_level,
+        "recommended_action": recommended_action,
+        "thresholds": {
+            "warning_psi": round(float(warning_threshold), 4),
+            "critical_psi": round(float(critical_threshold), 4),
+        },
+        "alert_summary": {
+            "level": alert_level,
+            "headline": overall_status,
+            "message": alert_message or "No significant drift was detected.",
+            "recommended_action": recommended_action,
+        },
         "feature_drift": feature_drift,
         "total_features_checked": total,
         "drifted_count": drifted_count,

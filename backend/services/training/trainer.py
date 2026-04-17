@@ -12,9 +12,17 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
 from sklearn.svm import SVC
 from xgboost import XGBClassifier, XGBRegressor
-from lightgbm import LGBMClassifier, LGBMRegressor
 from sklearn.preprocessing import LabelEncoder
 from sklearn.pipeline import Pipeline
+
+try:
+    from lightgbm import LGBMClassifier, LGBMRegressor
+
+    LGBM_TYPES = (LGBMClassifier, LGBMRegressor)
+except Exception:
+    LGBMClassifier = None
+    LGBMRegressor = None
+    LGBM_TYPES = tuple()
 
 from infra.database import get_db, JobModel
 from core.integrations import MLTracking
@@ -58,8 +66,11 @@ class ModelAgent:
                 LogisticRegression(max_iter=1000) if is_clf else LinearRegression(),
             "Random Forest": RandomForestClassifier() if is_clf else RandomForestRegressor(),
             "XGBoost": XGBClassifier(eval_metric='logloss') if is_clf else XGBRegressor(),
-            "LightGBM": LGBMClassifier(verbose=-1) if is_clf else LGBMRegressor(verbose=-1),
         }
+        if LGBMClassifier is not None and LGBMRegressor is not None:
+            pool["LightGBM"] = (
+                LGBMClassifier(verbose=-1) if is_clf else LGBMRegressor(verbose=-1)
+            )
         
         # Regression specific
         if not is_clf:
@@ -253,7 +264,7 @@ def train_automl(
                         }
                     
                     m = model_pool[name].__class__(**model_params)
-                    if isinstance(m, (LGBMClassifier, LGBMRegressor)):
+                    if LGBM_TYPES and isinstance(m, LGBM_TYPES):
                         try:
                             m.set_params(verbose=-1)
                         except Exception:
@@ -283,7 +294,7 @@ def train_automl(
             if study.best_value > best_overall_score:
                 best_overall_score = study.best_value
                 final_model = model_pool[name].__class__(**study.best_params)
-                if isinstance(final_model, (LGBMClassifier, LGBMRegressor)):
+                if LGBM_TYPES and isinstance(final_model, LGBM_TYPES):
                     try:
                         final_model.set_params(verbose=-1)
                     except Exception:

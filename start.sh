@@ -13,6 +13,9 @@ export CELERY_BROKER_URL="${CELERY_BROKER_URL:-$REDIS_URL}"
 export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-$REDIS_URL}"
 export AUTOML_API_URL="${AUTOML_API_URL:-http://127.0.0.1:8000/api}"
 export MAX_UPLOAD_MB="${MAX_UPLOAD_MB:-500}"
+export PORT="${PORT:-7860}"
+export STREAMLIT_ENABLE_CORS="${STREAMLIT_ENABLE_CORS:-false}"
+export STREAMLIT_ENABLE_XSRF_PROTECTION="${STREAMLIT_ENABLE_XSRF_PROTECTION:-false}"
 
 mkdir -p /tmp/nginx_client_body /tmp/nginx_proxy /tmp/nginx_fastcgi /tmp/nginx_uwsgi /tmp/nginx_scgi
 
@@ -45,15 +48,16 @@ python -m streamlit run app.py \
     --server.port 8501 \
     --server.address 127.0.0.1 \
     --server.headless true \
-    --server.enableCORS false \
-    --server.enableXsrfProtection false \
+    --server.enableCORS "${STREAMLIT_ENABLE_CORS}" \
+    --server.enableXsrfProtection "${STREAMLIT_ENABLE_XSRF_PROTECTION}" \
     --server.maxUploadSize "${MAX_UPLOAD_MB}" \
     --browser.gatherUsageStats false &
 FRONTEND_PID=$!
 
 echo "Starting Nginx on port ${PORT:-7860}..."
 cd "$SCRIPT_DIR"
-nginx -c "$SCRIPT_DIR/nginx.conf" &
+sed "s/__PORT__/${PORT}/g" "$SCRIPT_DIR/nginx.conf" > /tmp/nginx.generated.conf
+nginx -c /tmp/nginx.generated.conf &
 NGINX_PID=$!
 
 echo "All services launched."

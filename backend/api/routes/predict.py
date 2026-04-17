@@ -79,6 +79,12 @@ def predict(job_id: str, req: PredictRequest):
             try:
                 proba = model.predict_proba(df)
                 result["confidence_pct"] = round(float(max(proba[0])) * 100, 1)
+                classes = getattr(model, "classes_", None)
+                if classes is not None and len(classes) == len(proba[0]):
+                    result["probabilities"] = {
+                        str(label): round(float(score) * 100, 2)
+                        for label, score in zip(classes, proba[0])
+                    }
             except Exception:
                 pass
 

@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 from services.training.preprocessing import auto_clean_data, fuzzy_merge_labels
+from services.drift_service import get_drift_dashboard
+from services.training.forecasting import estimate_training_forecast
 from core.file_loader import load_dataframe
 
 
@@ -102,3 +104,47 @@ def test_load_dataframe_supports_markdown_documents():
     assert df.iloc[0]["source_file"] == "notes.md"
     assert df.iloc[0]["segment_type"] == "block"
     assert "Churn Notes" in df.iloc[0]["text"]
+
+
+def test_drift_dashboard_respects_custom_thresholds():
+    baseline = {"age": {"mean": 10.0, "std": 1.0, "count": 200}}
+    current_df = pd.DataFrame({"age": np.linspace(10.2, 10.8, 200)})
+
+    report = get_drift_dashboard(
+        current_df=current_df,
+        baseline_stats=baseline,
+        feature_names=["age"],
+        warning_threshold=0.01,
+        critical_threshold=0.02,
+    )
+
+    assert report["thresholds"]["warning_psi"] == 0.01
+    assert report["thresholds"]["critical_psi"] == 0.02
+    assert "alert_summary" in report
+    assert report["alert_summary"]["level"] in {"warning", "critical", "stable"}
+
+
+def test_training_forecast_returns_runtime_and_budget():
+    forecast = estimate_training_forecast(
+        profile={
+            "rows": 1200,
+            "cols": 12,
+            "columns": [f"f{i}" for i in range(12)],
+            "task_type": "classification",
+            "missing_pct": 4.5,
+        },
+        target_column="target",
+        goal="Balanced",
+        mode="Full",
+        selected_features=["f1", "f2", "f3"],
+        cv_folds=5,
+        handle_imbalance=True,
+        auto_clean=True,
+        eval_metric="Accuracy",
+    )
+
+    assert forecast["goal"] == "Balanced"
+    assert forecast["mode"] == "Full"
+    assert forecast["estimated_duration_seconds"]["max"] >= forecast["estimated_duration_seconds"]["min"]
+    assert forecast["optuna_trials"] == 32
+    assert forecast["estimated_feature_count"] == 3

@@ -7,8 +7,10 @@ from ui_shell import (
     ensure_session_state,
     load_css,
     render_page_shell,
+    render_safe_dataframe,
     render_section_intro,
     render_workspace_banner,
+    sync_workspace_query_params,
 )
 
 st.set_page_config(page_title="Dataset DNA", page_icon="🧬", layout="wide")
@@ -174,6 +176,7 @@ with repair_right:
             if repair_res.status_code == 200 and not repair_data.get("error"):
                 st.session_state["dataset_id"] = repair_data["dataset_id"]
                 st.session_state["profile"] = repair_data["profile"]
+                sync_workspace_query_params()
                 st.success("Repaired dataset loaded into workspace.")
                 st.rerun()
             else:
@@ -193,7 +196,7 @@ if repair_preview:
         summary_cols[3].metric("Cols After", repair_preview.get("after_columns", 0))
         for item in repair_preview.get("logs", []):
             st.caption(f"• {item}")
-        st.dataframe(repair_preview.get("preview_records", []), width="stretch", hide_index=True)
+        render_safe_dataframe(repair_preview.get("preview_records", []), width="stretch", hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -213,7 +216,7 @@ if dataset_id:
     else:
         timeline_df = pd.DataFrame(timeline_payload.get("timeline", []))
         if not timeline_df.empty:
-            st.dataframe(timeline_df, width="stretch", hide_index=True)
+            render_safe_dataframe(timeline_df, width="stretch", hide_index=True)
         diff = timeline_payload.get("profile_diff", {})
         if diff:
             d1, d2, d3 = st.columns(3)
@@ -293,7 +296,7 @@ if column_stats:
         except Exception:
             pass
 
-    st.dataframe(stats_df, width="stretch")
+    render_safe_dataframe(stats_df, width="stretch")
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Feature 2: Auto-Detect Details ───────────────────────────────────────
@@ -313,7 +316,7 @@ if column_stats:
         if col_scores:
             st.markdown("#### 🏆 Top Target Column Candidates")
             df_cands = pd.DataFrame(col_scores[:8])
-            st.dataframe(df_cands, width="stretch", hide_index=True)
+            render_safe_dataframe(df_cands, width="stretch", hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Feature 4: Leakage Detection Panel ─────────────────────────────────────
@@ -370,13 +373,13 @@ if leakage:
         # Detailed tables
         if leakage.get("target_correlated"):
             with st.expander("🔴 Target-Correlated Features (likely leakage)"):
-                st.dataframe(pd.DataFrame(leakage["target_correlated"]), width="stretch", hide_index=True)
+                render_safe_dataframe(pd.DataFrame(leakage["target_correlated"]), width="stretch", hide_index=True)
         if leakage.get("near_constant"):
             with st.expander("🟡 Near-Constant Features"):
-                st.dataframe(pd.DataFrame(leakage["near_constant"]), width="stretch", hide_index=True)
+                render_safe_dataframe(pd.DataFrame(leakage["near_constant"]), width="stretch", hide_index=True)
         if leakage.get("high_missing"):
             with st.expander("🟡 High Missing Value Features (>50%)"):
-                st.dataframe(pd.DataFrame(leakage["high_missing"]), width="stretch", hide_index=True)
+                render_safe_dataframe(pd.DataFrame(leakage["high_missing"]), width="stretch", hide_index=True)
 else:
     st.info("Click **Run Leakage Scan** above to check your dataset for common ML pitfalls.")
 
@@ -456,6 +459,7 @@ else:
                     st.session_state["dataset_id"] = merge_data["dataset_id"]
                     st.session_state["profile"] = merge_data["profile"]
                     st.session_state["dna_merge_preview"] = {}
+                    sync_workspace_query_params()
                     st.success("Merged dataset loaded into the workspace.")
                     st.rerun()
                 else:
@@ -468,6 +472,10 @@ else:
         if merge_preview.get("error"):
             st.error(merge_preview["error"])
         else:
+            if merge_preview.get("join_key_coerced_to_string"):
+                st.info(
+                    "Join keys had different data types, so preview matching was normalized using string values."
+                )
             preview_cols = st.columns(5)
             preview_cols[0].metric("Estimated Rows", merge_preview.get("estimated_rows", 0))
             preview_cols[1].metric("Overlapping Keys", merge_preview.get("overlapping_keys", 0))
@@ -479,5 +487,5 @@ else:
                 f"right {merge_preview.get('right_duplicate_keys', 0)}"
             )
             if merge_preview.get("preview_records"):
-                st.dataframe(merge_preview["preview_records"], width="stretch", hide_index=True)
+                render_safe_dataframe(merge_preview["preview_records"], width="stretch", hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)

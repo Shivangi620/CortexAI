@@ -20,7 +20,7 @@ This repository is configured to run on Hugging Face Spaces as a single Docker S
 ![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-AutoML Studio is a high-performance, intelligent end-to-end automated machine learning platform. It empowers anyone to upload tabular datasets, leverage "Dataset DNA" heuristics to automatically preprocess data, logically isolate the most appropriate algorithms, and train competitive ML models locally through a standalone **HTML/CSS/JavaScript** frontend served directly by **FastAPI**.
+AutoML Studio is a high-performance, intelligent end-to-end automated machine learning platform. It empowers anyone to upload tabular datasets, leverage "Dataset DNA" heuristics to automatically preprocess data, logically isolate the most appropriate algorithms, and train competitive ML models through a multi-page **Streamlit** frontend paired with a **FastAPI** backend.
 
 ![AutoML Studio Dashboard](./assets/dashboard_preview.png)
 *(Placeholder: Add a screenshot or GIF of the dashboard here)*
@@ -122,6 +122,11 @@ docker-compose up -d
 - **Storage**: Use cloud storage (S3, GCS) for large model files
 - **Scaling**: Consider load balancer for multiple instances
 - **Security**: Add authentication, rate limiting, and input validation
+
+### Configuration Notes
+- `PORT` controls the public Nginx listener. Default is `7860`.
+- `AUTOML_ALLOWED_ORIGINS` accepts a comma-separated CORS allowlist for the FastAPI backend.
+- `STREAMLIT_ENABLE_CORS` and `STREAMLIT_ENABLE_XSRF_PROTECTION` let you tighten frontend security for non-HF deployments.
 
 ---
 

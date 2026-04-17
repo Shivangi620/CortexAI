@@ -2,6 +2,7 @@
 AutoML Studio — Backend Entry Point (V4)
 """
 import csv
+import os
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -76,9 +77,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+allowed_origins_raw = os.getenv("AUTOML_ALLOWED_ORIGINS", "*").strip()
+allowed_origins = (
+    ["*"]
+    if not allowed_origins_raw or allowed_origins_raw == "*"
+    else [origin.strip() for origin in allowed_origins_raw.split(",") if origin.strip()]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

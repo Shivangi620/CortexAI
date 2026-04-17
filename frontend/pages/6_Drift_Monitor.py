@@ -6,8 +6,10 @@ from ui_shell import (
     ensure_session_state,
     load_css,
     render_page_shell,
+    render_safe_dataframe,
     render_section_intro,
     render_workspace_banner,
+    sync_workspace_query_params,
 )
 
 st.set_page_config(page_title="Drift Monitor", page_icon="📉", layout="wide")
@@ -92,6 +94,7 @@ with retrain_col:
             if retrain_payload.get("profile"):
                 st.session_state["profile"] = retrain_payload["profile"]
             st.session_state["job_id"] = retrain_payload.get("job_id")
+            sync_workspace_query_params()
             st.success(f"Started retraining job `{retrain_payload.get('job_id', '')[:8]}` on the drifted dataset.")
             st.page_link("pages/3_Training_Lab.py", label="Open Live Training", icon="🧪")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -121,6 +124,16 @@ if drift_data:
         if alert_msg:
             st.markdown(f"> ⚠️ **{alert_msg}**")
 
+        alert_summary = drift_data.get("alert_summary", {}) or {}
+        thresholds = drift_data.get("thresholds", {}) or {}
+        if alert_summary:
+            st.markdown("### 🚨 Drift Alert Summary")
+            alert_cols = st.columns(3)
+            alert_cols[0].metric("Alert Level", alert_summary.get("level", "—").title())
+            alert_cols[1].metric("Warning PSI", thresholds.get("warning_psi", "—"))
+            alert_cols[2].metric("Critical PSI", thresholds.get("critical_psi", "—"))
+            st.caption(alert_summary.get("recommended_action", ""))
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Drift Score", f"{drift_score}%")
         c2.metric("Features Checked", total)
@@ -141,7 +154,7 @@ if drift_data:
                     }
                 )
             feature_df = pd.DataFrame(rows)
-            st.dataframe(feature_df, width="stretch", hide_index=True)
+            render_safe_dataframe(feature_df, width="stretch", hide_index=True)
             if not feature_df.empty and feature_df["PSI"].notna().any():
                 psi_chart = feature_df[["Feature", "PSI"]].dropna().set_index("Feature")
                 st.bar_chart(psi_chart)
@@ -157,6 +170,8 @@ st.markdown("### ⏱ Drift Check Cadence")
 cad1, cad2, cad3 = st.columns([1, 1, 1])
 enabled_default = bool(schedule_payload.get("enabled", True)) if not schedule_payload.get("error") else True
 freq_default = int(schedule_payload.get("frequency_days", 7)) if not schedule_payload.get("error") else 7
+warning_default = float(schedule_payload.get("warning_threshold", 0.1)) if not schedule_payload.get("error") else 0.1
+critical_default = float(schedule_payload.get("critical_threshold", 0.2)) if not schedule_payload.get("error") else 0.2
 enabled_value = cad1.toggle("Enable saved cadence", value=enabled_default)
 freq_value = cad2.selectbox("Check every", options=[1, 3, 7, 14, 30], index=[1, 3, 7, 14, 30].index(freq_default) if freq_default in [1, 3, 7, 14, 30] else 2)
 if not schedule_payload.get("error"):
@@ -166,11 +181,27 @@ if not schedule_payload.get("error"):
         cad3.caption(f"Next due: {schedule_payload.get('next_due_at') or 'after first check'}")
 else:
     cad3.caption("This saves the preferred review cadence for this job and pairs with the drift history below.")
+
+th1, th2, th3 = st.columns([1, 1, 1])
+warning_value = th1.number_input("Warning PSI", min_value=0.01, max_value=1.0, value=warning_default, step=0.01)
+critical_value = th2.number_input("Critical PSI", min_value=warning_value, max_value=2.0, value=max(critical_default, warning_value), step=0.01)
+last_alert_summary = schedule_payload.get("last_alert_summary", {}) if not schedule_payload.get("error") else {}
+if last_alert_summary:
+    th3.caption(f"Latest alert: {(schedule_payload.get('last_alert_status') or 'unknown').title()}")
+    th3.caption(last_alert_summary.get("message", ""))
+else:
+    th3.caption("Thresholds apply to new drift checks and saved alert summaries.")
+
 if st.button("💾 Save Drift Cadence", width="stretch"):
     try:
         res = requests.post(
             f"{API_URL}/drift/{job_id}/schedule",
-            params={"enabled": enabled_value, "frequency_days": freq_value},
+            params={
+                "enabled": enabled_value,
+                "frequency_days": freq_value,
+                "warning_threshold": warning_value,
+                "critical_threshold": critical_value,
+            },
             timeout=20,
         )
         if res.status_code == 200:
@@ -191,7 +222,7 @@ else:
     if history_df.empty:
         st.info("No drift checks saved for this job yet.")
     else:
-        st.dataframe(history_df, width="stretch", hide_index=True)
+        render_safe_dataframe(history_df, width="stretch", hide_index=True)
         status_counts = history_df["status"].value_counts().rename_axis("Status").to_frame("Checks")
         st.bar_chart(status_counts)
 st.markdown("</div>", unsafe_allow_html=True)

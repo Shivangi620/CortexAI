@@ -1,6 +1,8 @@
 import os
-from typing import Iterable, Optional
+import json
+from typing import Any, Iterable, Optional
 
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -12,6 +14,10 @@ SESSION_DEFAULTS = {
     "job_id": None,
     "auto_detect": None,
     "last_analyzed_file": None,
+    "upload_preview_records": [],
+    "upload_ingest_summary": {},
+    "_workspace_restored": False,
+    "_workspace_bootstrapped": False,
 }
 
 
@@ -28,6 +34,76 @@ def ensure_session_state() -> None:
     for key, default in SESSION_DEFAULTS.items():
         if key not in st.session_state:
             st.session_state[key] = default
+    if not st.session_state.get("_workspace_bootstrapped"):
+        restore_workspace_state()
+        st.session_state["_workspace_bootstrapped"] = True
+
+
+def _query_param_value(name: str) -> Optional[str]:
+    try:
+        value = st.query_params.get(name)
+    except Exception:
+        return None
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def get_query_param(name: str) -> Optional[str]:
+    return _query_param_value(name)
+
+
+def sync_query_params(**updates: Any) -> None:
+    try:
+        merged = dict(st.query_params)
+        for key, value in updates.items():
+            if value in (None, "", [], {}):
+                merged.pop(key, None)
+            else:
+                merged[key] = str(value)
+        st.query_params.clear()
+        st.query_params.update(merged)
+    except Exception:
+        pass
+
+
+def sync_workspace_query_params(**extra: Any) -> None:
+    sync_query_params(
+        dataset_id=st.session_state.get("dataset_id"),
+        job_id=st.session_state.get("job_id"),
+        **extra,
+    )
+
+
+def restore_workspace_state() -> None:
+    dataset_id = _query_param_value("dataset_id")
+    job_id = _query_param_value("job_id")
+    path = (
+        f"/workspace/restore?dataset_id={dataset_id or ''}&job_id={job_id or ''}"
+        if dataset_id or job_id
+        else "/workspace/latest"
+    )
+    payload = api_json(path, timeout=10)
+    if not isinstance(payload, dict) or payload.get("error"):
+        return
+
+    dataset = payload.get("dataset") or {}
+    job = payload.get("job") or {}
+    if dataset:
+        st.session_state["dataset_id"] = dataset.get("id")
+        st.session_state["profile"] = dataset.get("profile") or st.session_state.get("profile")
+        st.session_state["upload_preview_records"] = dataset.get("preview_records") or []
+        st.session_state["upload_ingest_summary"] = dataset.get("ingest_summary") or {}
+        st.session_state["auto_detect"] = dataset.get("auto_detect")
+    if job and job.get("id"):
+        st.session_state["job_id"] = job.get("id")
+
+    st.session_state["_workspace_restored"] = bool(dataset or job)
+    if dataset or job:
+        sync_workspace_query_params()
 
 
 def api_json(path: str, timeout: int = 10):
@@ -43,6 +119,54 @@ def api_json(path: str, timeout: int = 10):
         return {"error": detail or f"HTTP {response.status_code}"}
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def _serialize_cell(value: Any) -> Any:
+    if isinstance(value, (list, tuple, dict, set)):
+        try:
+            return json.dumps(value, ensure_ascii=True, default=str)
+        except Exception:
+            return str(value)
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def prepare_dataframe_for_display(data: Any) -> pd.DataFrame:
+    if isinstance(data, pd.DataFrame):
+        df = data.copy()
+    elif isinstance(data, list):
+        df = pd.DataFrame(data)
+    elif isinstance(data, dict):
+        df = pd.DataFrame([data])
+    else:
+        df = pd.DataFrame(data)
+
+    if df.empty:
+        return df
+
+    for col in df.columns:
+        series = df[col]
+        if (
+            pd.api.types.is_object_dtype(series)
+            or pd.api.types.is_string_dtype(series)
+            or pd.api.types.is_categorical_dtype(series)
+        ):
+            # Display tables are safer when every loose/object column is normalized
+            # into a single scalar-friendly representation before Streamlit Arrow conversion.
+            df[col] = series.map(_serialize_cell)
+    return df
+
+
+def render_safe_dataframe(data: Any, **kwargs: Any) -> None:
+    st.dataframe(prepare_dataframe_for_display(data), **kwargs)
 
 
 def fetch_backend_overview() -> dict:

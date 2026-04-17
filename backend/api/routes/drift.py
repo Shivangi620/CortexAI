@@ -24,6 +24,7 @@ async def detect_drift(job_id: str, file: UploadFile = File(...)):
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if not job or job.status != "completed":
             raise HTTPException(status_code=404, detail="Job not completed")
+        schedule = db.query(DriftSchedule).filter(DriftSchedule.job_id == job_id).first()
 
         try:
             results = normalize_results(json.loads(job.results_json) if job.results_json else {})
@@ -89,11 +90,30 @@ async def detect_drift(job_id: str, file: UploadFile = File(...)):
 
     feature_names = results.get("feature_names") or []
 
-    report = get_drift_dashboard(current_df, baseline_stats, feature_names)
+    warning_threshold = None
+    critical_threshold = None
+    if schedule:
+        try:
+            warning_threshold = float(schedule.warning_threshold or 0.1)
+        except Exception:
+            warning_threshold = 0.1
+        try:
+            critical_threshold = float(schedule.critical_threshold or 0.2)
+        except Exception:
+            critical_threshold = 0.2
+
+    report = get_drift_dashboard(
+        current_df,
+        baseline_stats,
+        feature_names,
+        warning_threshold=warning_threshold,
+        critical_threshold=critical_threshold,
+    )
 
     try:
         with get_db() as db:
             job = db.query(JobModel).filter(JobModel.id == job_id).first()
+            schedule_row = db.query(DriftSchedule).filter(DriftSchedule.job_id == job_id).first()
             db.add(
                 DriftCheck(
                     job_id=job_id,
@@ -104,6 +124,9 @@ async def detect_drift(job_id: str, file: UploadFile = File(...)):
                     report_json=json.dumps(report),
                 )
             )
+            if schedule_row:
+                schedule_row.last_alert_status = report.get("alert_level")
+                schedule_row.last_alert_summary = json.dumps(report.get("alert_summary") or {})
     except Exception:
         pass
 
@@ -195,9 +218,26 @@ def get_drift_schedule(job_id: str):
         if not row:
             frequency_days = 7
             enabled = True
+            warning_threshold = 0.1
+            critical_threshold = 0.2
+            last_alert_status = None
+            last_alert_summary = {}
         else:
             frequency_days = int(row.frequency_days or 7)
             enabled = str(row.enabled).lower() == "true"
+            try:
+                warning_threshold = float(row.warning_threshold or 0.1)
+            except Exception:
+                warning_threshold = 0.1
+            try:
+                critical_threshold = float(row.critical_threshold or 0.2)
+            except Exception:
+                critical_threshold = 0.2
+            last_alert_status = row.last_alert_status
+            try:
+                last_alert_summary = json.loads(row.last_alert_summary) if row.last_alert_summary else {}
+            except Exception:
+                last_alert_summary = {}
 
         next_due_at = None
         due_now = False
@@ -215,26 +255,48 @@ def get_drift_schedule(job_id: str):
             "last_check_at": latest_check.created_at.isoformat() if latest_check and latest_check.created_at else None,
             "next_due_at": next_due_at,
             "due_now": due_now,
+            "warning_threshold": warning_threshold,
+            "critical_threshold": critical_threshold,
+            "last_alert_status": last_alert_status,
+            "last_alert_summary": last_alert_summary,
         }
 
 
 @router.post("/drift/{job_id}/schedule")
-def save_drift_schedule(job_id: str, enabled: bool = True, frequency_days: int = 7):
+def save_drift_schedule(
+    job_id: str,
+    enabled: bool = True,
+    frequency_days: int = 7,
+    warning_threshold: float = 0.1,
+    critical_threshold: float = 0.2,
+):
     frequency_days = max(1, int(frequency_days or 7))
+    warning_threshold = max(0.01, float(warning_threshold or 0.1))
+    critical_threshold = max(warning_threshold, float(critical_threshold or 0.2))
     with get_db() as db:
         row = db.query(DriftSchedule).filter(DriftSchedule.job_id == job_id).first()
         if row:
             row.enabled = str(bool(enabled)).lower()
             row.frequency_days = str(frequency_days)
+            row.warning_threshold = str(warning_threshold)
+            row.critical_threshold = str(critical_threshold)
         else:
             db.add(
                 DriftSchedule(
                     job_id=job_id,
                     enabled=str(bool(enabled)).lower(),
                     frequency_days=str(frequency_days),
+                    warning_threshold=str(warning_threshold),
+                    critical_threshold=str(critical_threshold),
                 )
             )
-    return {"job_id": job_id, "enabled": enabled, "frequency_days": frequency_days}
+    return {
+        "job_id": job_id,
+        "enabled": enabled,
+        "frequency_days": frequency_days,
+        "warning_threshold": warning_threshold,
+        "critical_threshold": critical_threshold,
+    }
 
 
 @router.post("/drift/{job_id}/retrain")

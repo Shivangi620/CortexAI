@@ -29,6 +29,7 @@ celery_app = Celery(
     broker=REDIS_URL,
     backend=REDIS_URL
 )
+celery_app.conf.broker_connection_retry_on_startup = True
 
 @celery_app.task(bind=True, max_retries=0)
 def run_training_job(

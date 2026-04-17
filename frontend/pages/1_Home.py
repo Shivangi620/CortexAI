@@ -4,10 +4,13 @@ import requests
 from ui_shell import (
     API_URL,
     ensure_session_state,
+    get_query_param,
     load_css,
     render_page_shell,
+    render_safe_dataframe,
     render_section_intro,
     render_workspace_banner,
+    sync_workspace_query_params,
 )
 
 st.set_page_config(page_title="Home - AutoML Studio", page_icon="🏠", layout="wide")
@@ -17,12 +20,16 @@ ensure_session_state()
 st.session_state.setdefault("upload_preview_records", [])
 st.session_state.setdefault("upload_ingest_summary", {})
 st.session_state.setdefault("home_merge_preview", {})
-st.session_state.setdefault("goal_choice", "🎯 Performance(best results)")
-st.session_state.setdefault("mode_choice", "⚖️ Balanced (Standard optimization)")
-st.session_state.setdefault("eval_metric_choice", "Accuracy")
-st.session_state.setdefault("handle_imbalance_choice", False)
-st.session_state.setdefault("auto_clean_choice", True)
-st.session_state.setdefault("cv_folds_choice", 0)
+st.session_state.setdefault("goal_choice", get_query_param("goal") or "🎯 Performance(best results)")
+st.session_state.setdefault("mode_choice", get_query_param("mode") or "⚖️ Balanced (Standard optimization)")
+st.session_state.setdefault("eval_metric_choice", get_query_param("metric") or "Accuracy")
+st.session_state.setdefault("handle_imbalance_choice", (get_query_param("imbalance") or "false").lower() == "true")
+st.session_state.setdefault("auto_clean_choice", (get_query_param("auto_clean") or "true").lower() == "true")
+try:
+    default_cv_folds = int(get_query_param("cv_folds") or 0)
+except (TypeError, ValueError):
+    default_cv_folds = 0
+st.session_state.setdefault("cv_folds_choice", default_cv_folds)
 
 profile = st.session_state.get("profile") or {}
 render_page_shell(
@@ -38,6 +45,16 @@ render_page_shell(
     accent="soft",
 )
 render_workspace_banner()
+if st.session_state.get("_workspace_restored") and st.session_state.get("dataset_id"):
+    st.markdown(
+        """
+        <div class="inline-notice inline-notice--success">
+            <strong>Workspace Restored</strong>
+            <span>Your last persisted dataset and run context were recovered, so a browser refresh will continue from the saved workspace instead of forcing a new upload.</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 render_section_intro(
     "Workspace Flow",
     "Ingest data, confirm the prediction setup, and launch training.",
@@ -139,6 +156,7 @@ if import_mode == "Upload File":
                                     st.session_state['auto_detect'] = detect_res.json()
                             except Exception:
                                 pass
+                            sync_workspace_query_params()
                     else:
                         st.error(f"Backend error: {res.status_code}")
                 except requests.exceptions.ConnectionError:
@@ -185,6 +203,7 @@ elif import_mode == "Connectors":
                         st.session_state["profile"] = data["profile"]
                         st.session_state["upload_preview_records"] = data.get("preview_records", [])
                         st.session_state["upload_ingest_summary"] = data.get("ingest_summary", {})
+                        sync_workspace_query_params()
                         st.success(f"{connector_type} import completed.")
                     else:
                         st.error(data.get("error", f"Import failed: HTTP {res.status_code}"))
@@ -301,8 +320,12 @@ else:
                 f"Duplicates on join keys: left {merge_preview.get('left_duplicate_keys', 0)} · "
                 f"right {merge_preview.get('right_duplicate_keys', 0)}"
             )
+            if merge_preview.get("join_key_coerced_to_string"):
+                st.info(
+                    "Join keys had different data types, so preview matching was normalized using string values."
+                )
             if merge_preview.get("preview_records"):
-                st.dataframe(merge_preview["preview_records"], width="stretch", hide_index=True)
+                render_safe_dataframe(merge_preview["preview_records"], width="stretch", hide_index=True)
 
     if st.button("🧬 Merge Datasets", width="stretch"):
         if left_dataset_id == right_dataset_id:
@@ -330,12 +353,17 @@ else:
                         st.session_state["upload_preview_records"] = merge_data.get("preview_records", [])
                         st.session_state["upload_ingest_summary"] = merge_data.get("ingest_summary", {})
                         st.session_state["home_merge_preview"] = {}
+                        sync_workspace_query_params()
                         st.success("Merged dataset loaded into workspace.")
                         merge_summary = merge_data.get("merge_summary", {})
                         st.caption(
                             f"{merge_summary.get('join_type', 'inner')} join produced "
                             f"{merge_summary.get('merged_rows', 0)} rows."
                         )
+                        if merge_summary.get("join_key_coerced_to_string"):
+                            st.info(
+                                "The join keys had different data types, so the merge was performed after converting both keys to string."
+                            )
                     else:
                         st.error(merge_data.get("error", "Merge failed."))
                 except Exception as e:
@@ -358,7 +386,7 @@ if st.session_state.get('profile'):
 
     if preview_records:
         st.markdown("### Ingestion Preview", unsafe_allow_html=True)
-        st.dataframe(preview_records, width="stretch", hide_index=True)
+        render_safe_dataframe(preview_records, width="stretch", hide_index=True)
         if ingest_summary:
             ingest_cols = st.columns(4)
             ingest_cols[0].metric("Source Type", ingest_summary.get("source_type", "—"))
@@ -387,6 +415,7 @@ if st.session_state.get('profile'):
                         st.session_state["profile"] = ocr_data["profile"]
                         st.session_state["upload_preview_records"] = ocr_data.get("preview_records", [])
                         st.session_state["upload_ingest_summary"] = ocr_data.get("ingest_summary", {})
+                        sync_workspace_query_params()
                         st.success("OCR-reviewed dataset created and loaded into the workspace.")
                     else:
                         st.error(ocr_data.get("error", "Failed to create OCR-reviewed dataset."))
@@ -565,19 +594,73 @@ if st.session_state.get('profile'):
         with out_col3:
             export_report = st.checkbox("✔ Report", value=True, help="Export full HTML/PDF analysis report")
 
-    if st.button("▶ Run AutoML Engine", key="run_automl", width="stretch"):
-        # Explicit mapping — no fragile emoji splitting
-        goal_map = {
-            "🎯 Performance(best results)": "Performance",
-            "⚡ Speed(fast)": "Speed",
-            "⚖️ Balanced": "Balanced"
-        }
-        mode_map = {
-            "⚡ Fast (Exploration only)": "Fast",
-            "⚖️ Balanced (Standard optimization)": "Balanced",
-            "🧠 Full (Deep Bayesian Search)": "Full"
-        }
+        if st.button("Reset Advanced Options To Recommended Defaults", width="stretch"):
+            st.session_state["eval_metric_choice"] = "RMSE" if task_type == "regression" else "Accuracy"
+            st.session_state["handle_imbalance_choice"] = False
+            st.session_state["auto_clean_choice"] = True
+            st.session_state["cv_folds_choice"] = 0
+            st.rerun()
 
+    goal_map = {
+        "🎯 Performance(best results)": "Performance",
+        "⚡ Speed(fast)": "Speed",
+        "⚖️ Balanced": "Balanced"
+    }
+    mode_map = {
+        "⚡ Fast (Exploration only)": "Fast",
+        "⚖️ Balanced (Standard optimization)": "Balanced",
+        "🧠 Full (Deep Bayesian Search)": "Full"
+    }
+
+    forecast_payload = {}
+    try:
+        forecast_res = requests.post(
+            f"{API_URL}/train/forecast",
+            json={
+                "dataset_id": st.session_state["dataset_id"],
+                "target_column": target_col,
+                "goal": goal_map.get(goal, "Performance"),
+                "mode": mode_map.get(mode, "Balanced"),
+                "eval_metric": eval_metric,
+                "selected_features": selected_features if selected_features else [],
+                "handle_imbalance": handle_imbalance,
+                "auto_clean": auto_clean,
+                "cv_folds": cv_folds,
+            },
+            timeout=20,
+        )
+        forecast_payload = forecast_res.json() if forecast_res.status_code == 200 else {}
+    except Exception:
+        forecast_payload = {}
+
+    if forecast_payload and not forecast_payload.get("error"):
+        st.markdown("### ⏱ Training Forecast")
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        fc1.metric("Estimated Runtime", forecast_payload.get("estimated_duration_label", "—"))
+        fc2.metric("Compute", forecast_payload.get("compute_intensity", "—"))
+        fc3.metric("Models", forecast_payload.get("estimated_model_count", "—"))
+        fc4.metric("Sweep Rows", forecast_payload.get("estimated_sweep_rows", "—"))
+        st.caption(
+            f"Memory risk: {forecast_payload.get('memory_risk', '—')} · "
+            f"Optuna trials: {forecast_payload.get('optuna_trials', 0)} · "
+            f"Features in play: {forecast_payload.get('estimated_feature_count', '—')}"
+        )
+        for note in forecast_payload.get("notes", [])[:3]:
+            st.caption(f"• {note}")
+
+    st.caption(
+        f"Advanced summary: metric `{eval_metric}` · imbalance `{handle_imbalance}` · auto-clean `{auto_clean}` · CV folds `{cv_folds}`"
+    )
+    sync_workspace_query_params(
+        goal=goal,
+        mode=mode,
+        metric=eval_metric,
+        imbalance=str(handle_imbalance).lower(),
+        auto_clean=str(auto_clean).lower(),
+        cv_folds=cv_folds,
+    )
+
+    if st.button("▶ Run AutoML Engine", key="run_automl", width="stretch"):
         payload = {
             "dataset_id": st.session_state['dataset_id'],
             "target_column": target_col,
@@ -601,6 +684,14 @@ if st.session_state.get('profile'):
                     st.error(data["error"])
                 else:
                     st.session_state['job_id'] = data['job_id']
+                    sync_workspace_query_params(
+                        goal=goal,
+                        mode=mode,
+                        metric=eval_metric,
+                        imbalance=str(handle_imbalance).lower(),
+                        auto_clean=str(auto_clean).lower(),
+                        cv_folds=cv_folds,
+                    )
                     st.success("🚀 Training started!")
                     st.info("👉 Navigate to **Live Training** in the sidebar to watch progress.")
                     st.switch_page("pages/3_Training_Lab.py")

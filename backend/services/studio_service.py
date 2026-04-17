@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from core.file_loader import load_dataframe
-from infra.database import DatasetModel, ExperimentRun, get_db
+from infra.database import DatasetModel, ExperimentRun, JobModel, get_db
 
 
 def list_datasets(limit: int = 100) -> List[Dict[str, Any]]:
@@ -40,6 +40,106 @@ def list_datasets(limit: int = 100) -> List[Dict[str, Any]]:
         return items
 
 
+def _dataset_snapshot(row: DatasetModel | None) -> Dict[str, Any] | None:
+    if not row:
+        return None
+    try:
+        profile = json.loads(row.profile_json) if row.profile_json else {}
+    except Exception:
+        profile = {}
+
+    preview_records: List[Dict[str, Any]] = []
+    try:
+        if str(row.file_path or "").lower().endswith(".csv"):
+            df = pd.read_csv(row.file_path, nrows=8)
+        else:
+            df = load_dataframe(filepath=row.file_path)
+        if df is not None and not df.empty:
+            preview_records = json.loads(
+                df.head(8).to_json(orient="records", date_format="iso")
+            )
+    except Exception:
+        preview_records = []
+
+    return {
+        "id": row.id,
+        "source_type": row.source_type or "unknown",
+        "parent_dataset_id": row.parent_dataset_id,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "profile": profile,
+        "preview_records": preview_records,
+        "ingest_summary": {
+            "source_type": row.source_type or "unknown",
+            "rows": int(profile.get("rows") or 0),
+            "columns": int(
+                profile.get("cols") or len(profile.get("columns") or [])
+            ),
+            "column_names": profile.get("columns") or [],
+        },
+        "auto_detect": {
+            "suggested_target": profile.get("suggested_target"),
+            "task_type": profile.get("task_type"),
+            "confidence": profile.get("confidence", 0),
+            "warnings": [],
+        },
+    }
+
+
+def _job_snapshot(row: JobModel | None) -> Dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "id": row.id,
+        "dataset_id": row.dataset_id,
+        "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "error": row.error,
+    }
+
+
+def get_workspace_snapshot(
+    dataset_id: str | None = None,
+    job_id: str | None = None,
+) -> Dict[str, Any]:
+    with get_db() as db:
+        dataset_row = None
+        job_row = None
+
+        if job_id:
+            job_row = db.query(JobModel).filter(JobModel.id == job_id).first()
+            if job_row and not dataset_id:
+                dataset_id = job_row.dataset_id
+
+        if dataset_id:
+            dataset_row = (
+                db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+            )
+        else:
+            dataset_row = (
+                db.query(DatasetModel)
+                .order_by(DatasetModel.created_at.desc())
+                .first()
+            )
+
+        if not job_row and dataset_row:
+            job_row = (
+                db.query(JobModel)
+                .filter(JobModel.dataset_id == dataset_row.id)
+                .order_by(JobModel.created_at.desc())
+                .first()
+            )
+
+        if not job_row:
+            job_row = (
+                db.query(JobModel).order_by(JobModel.created_at.desc()).first()
+            )
+
+    return {
+        "dataset": _dataset_snapshot(dataset_row),
+        "job": _job_snapshot(job_row),
+    }
+
+
 def merge_preview(
     left_df: pd.DataFrame,
     right_df: pd.DataFrame,
@@ -47,8 +147,18 @@ def merge_preview(
     right_key: str,
     join_type: str = "inner",
 ) -> Dict[str, Any]:
+    left_df = left_df.copy()
+    right_df = right_df.copy()
     left_key_series = left_df[left_key]
     right_key_series = right_df[right_key]
+    coerced_keys = False
+
+    if str(left_key_series.dtype) != str(right_key_series.dtype):
+        left_df[left_key] = left_key_series.astype("string")
+        right_df[right_key] = right_key_series.astype("string")
+        left_key_series = left_df[left_key]
+        right_key_series = right_df[right_key]
+        coerced_keys = True
 
     left_non_null = left_key_series.dropna()
     right_non_null = right_key_series.dropna()
@@ -90,6 +200,9 @@ def merge_preview(
         "right_duplicate_keys": int(right_non_null.astype(str).duplicated().sum()),
         "left_match_pct": left_match_pct,
         "right_match_pct": right_match_pct,
+        "join_key_coerced_to_string": coerced_keys,
+        "left_key_dtype": str(left_df[left_key].dtype),
+        "right_key_dtype": str(right_df[right_key].dtype),
         "join_breakdown": merge_counts,
         "preview_records": preview_records,
     }

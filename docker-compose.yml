@@ -4,37 +4,11 @@ services:
   web:
     build: .
     ports:
-      - "8000:8000"
+      - "7860:7860"
     volumes:
-      - ./backend/runs:/app/backend/runs
-      - ./backend/tmp:/app/backend/tmp
+      - ./backend/runs:/home/user/app/backend/runs
+      - ./backend/tmp:/home/user/app/backend/tmp
     environment:
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
+      - PORT=7860
+      - AUTOML_ALLOWED_ORIGINS=http://localhost:7860,http://127.0.0.1:7860
     restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-
-  # Optional: Add PostgreSQL if using database features
-  # db:
-  #   image: postgres:15-alpine
-  #   environment:
-  #     POSTGRES_DB: automl
-  #     POSTGRES_USER: automl
-  #     POSTGRES_PASSWORD: your_password
-  #   volumes:
-  #     - postgres_data:/var/lib/postgresql/data
-  #   ports:
-  #     - "5432:5432"
-  #   restart: unless-stopped
-
-volumes:
-  redis_data:
-  # postgres_data:

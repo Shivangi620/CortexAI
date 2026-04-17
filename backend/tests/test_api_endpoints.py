@@ -1,7 +1,8 @@
 import json
 import math
+import os
 
-from infra.database import ExperimentRun, JobModel
+from infra.database import DatasetModel, ExperimentRun, JobModel
 from tests.conftest import TestingSessionLocal
 
 
@@ -91,3 +92,84 @@ def test_experiments_endpoint_sanitizes_nan_payloads(client):
     assert target["hyperparams"] == {"depth": 8, "lr": None}
     assert target["metrics"] == {"precision": None, "recall": 88.1}
     assert target["leaderboard"] == [{"model": "LGBM", "score": None}]
+
+
+def test_workspace_latest_restores_dataset_and_job(client, tmp_path):
+    csv_path = tmp_path / "workspace.csv"
+    csv_path.write_text("feature,target\n1,yes\n2,no\n", encoding="utf-8")
+
+    with TestingSessionLocal() as db:
+        db.add(
+            DatasetModel(
+                id="workspace-ds",
+                file_path=os.fspath(csv_path),
+                profile_json=json.dumps(
+                    {
+                        "rows": 2,
+                        "cols": 2,
+                        "columns": ["feature", "target"],
+                        "suggested_target": "target",
+                        "task_type": "classification",
+                    }
+                ),
+                source_type="upload",
+            )
+        )
+        db.add(
+            JobModel(
+                id="workspace-job",
+                dataset_id="workspace-ds",
+                status="completed",
+                history_json=json.dumps([{"time": "Final", "metric": 93.2}]),
+                results_json=json.dumps({"best_model": "LiteGBM", "score": 93.2}),
+            )
+        )
+        db.commit()
+
+    response = client.get("/api/workspace/latest")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataset"]["id"] == "workspace-ds"
+    assert body["dataset"]["profile"]["suggested_target"] == "target"
+    assert body["dataset"]["preview_records"][0]["feature"] == 1
+    assert body["job"]["id"] == "workspace-job"
+
+
+def test_workspace_restore_honors_explicit_job_id(client):
+    with TestingSessionLocal() as db:
+        if not db.query(DatasetModel).filter(DatasetModel.id == "workspace-ds").first():
+            db.add(
+                DatasetModel(
+                    id="workspace-ds",
+                    file_path="tests/data/dummy_data.csv",
+                    profile_json=json.dumps(
+                        {
+                            "rows": 2,
+                            "cols": 2,
+                            "columns": ["feature", "target"],
+                            "suggested_target": "target",
+                            "task_type": "classification",
+                        }
+                    ),
+                    source_type="upload",
+                )
+            )
+        if not db.query(JobModel).filter(JobModel.id == "workspace-job").first():
+            db.add(
+                JobModel(
+                    id="workspace-job",
+                    dataset_id="workspace-ds",
+                    status="completed",
+                    history_json=json.dumps([{"time": "Final", "metric": 93.2}]),
+                    results_json=json.dumps({"best_model": "LiteGBM", "score": 93.2}),
+                )
+            )
+        db.commit()
+
+    response = client.get("/api/workspace/restore", params={"job_id": "workspace-job"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job"]["id"] == "workspace-job"
+    assert body["dataset"]["id"] == "workspace-ds"

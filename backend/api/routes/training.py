@@ -33,6 +33,46 @@ class TrainRequest(BaseModel):
     export_report: bool = True
 
 
+class TrainingForecastRequest(BaseModel):
+    dataset_id: str
+    target_column: str = ""
+    goal: str = "Balanced"
+    mode: str = "Balanced"
+    eval_metric: str = ""
+    selected_features: List[str] = Field(default_factory=list)
+    handle_imbalance: bool = False
+    auto_clean: bool = True
+    cv_folds: int = 0
+
+
+@router.post("/train/forecast")
+def get_training_forecast(req: TrainingForecastRequest):
+    from services.training.forecasting import estimate_training_forecast
+
+    with get_db() as db:
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
+        if not dataset:
+            return {"error": "Dataset not found"}
+
+        try:
+            profile = json.loads(dataset.profile_json) if dataset.profile_json else {}
+        except Exception:
+            profile = {}
+
+    target_column = (req.target_column or profile.get("suggested_target") or "").strip()
+    return estimate_training_forecast(
+        profile=profile,
+        target_column=target_column,
+        goal=req.goal,
+        mode=req.mode,
+        selected_features=req.selected_features,
+        cv_folds=req.cv_folds,
+        handle_imbalance=req.handle_imbalance,
+        auto_clean=req.auto_clean,
+        eval_metric=req.eval_metric,
+    )
+
+
 @router.post("/train")
 def start_training(req: TrainRequest):
     req.target_column = (req.target_column or "").strip()
