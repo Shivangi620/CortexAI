@@ -1,25 +1,36 @@
 FROM python:3.12-slim
 
-WORKDIR /app
-
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc g++ \
-    supervisor \
+    redis-server \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 🚀 CRITICAL FOR HUGGING FACE SPACES 🚀
+# HF Spaces run as a non-root user (uid 1000)
+# We must create this user and set the home directory
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
 
-COPY . .
+WORKDIR $HOME/app
 
+# Copy and install dependencies first (caches this step)
+COPY --chown=user requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Copy the rest of the application
+COPY --chown=user . .
+
+# Create necessary directories for the backend
 RUN mkdir -p backend/runs backend/tmp
 
-ENV PYTHONPATH=/app/backend:$PYTHONPATH
+ENV PYTHONPATH=$HOME/app/backend:$PYTHONPATH
 
-EXPOSE 8000
-EXPOSE 8501
+# Tell your start.sh script to boot Streamlit on 7860 (the only port HF exposes)
+ENV PORT=7860
+EXPOSE 7860
 
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
-CMD ["bash", "./start.sh"]
+# Start up using your existing robust launch script (handles FastAPI + Streamlit simultaneously)
+CMD ["bash", "start.sh"]
