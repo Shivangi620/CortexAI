@@ -14,15 +14,6 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse
 
 log = get_logger(__name__)
-WEB_DIR = Path(__file__).resolve().parent.parent / "frontend" / "web"
-
-
-def _serve_web_file(filename: str):
-    page_path = WEB_DIR / filename
-    if page_path.exists():
-        return FileResponse(page_path)
-    return {"error": f"{filename} not found"}
-
 csv.field_size_limit(int(1e9))
 
 # ── Route imports ─────────────────────────────────────────────────────────────
@@ -115,48 +106,7 @@ for r in [
         log.warning(f"Router mount failed: {e}")
 
 
-if WEB_DIR.exists():
-    app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
-
-@app.get("/", include_in_schema=False)
-def serve_frontend():
-    return _serve_web_file("index.html")
-
-
-@app.get("/results", include_in_schema=False)
-def serve_results_console():
-    return _serve_web_file("results.html")
-
-
-@app.get("/results-console", include_in_schema=False)
-def serve_results_console_alias():
-    return serve_results_console()
-
-
-@app.get("/dataset-dna", include_in_schema=False)
-def serve_dataset_dna():
-    return _serve_web_file("dataset-dna.html")
-
-
-@app.get("/training-lab", include_in_schema=False)
-def serve_training_lab():
-    return _serve_web_file("training-lab.html")
-
-
-@app.get("/experiment-tracker", include_in_schema=False)
-def serve_experiment_tracker():
-    return _serve_web_file("experiment-tracker.html")
-
-
-@app.get("/drift-monitor", include_in_schema=False)
-def serve_drift_monitor():
-    return _serve_web_file("drift-monitor.html")
-
-
-@app.get("/smart-ai-hub", include_in_schema=False)
-def serve_smart_ai_hub():
-    return _serve_web_file("smart-ai-hub.html")
 
 
 # ── Health probe ──────────────────────────────────────────────────────────────
