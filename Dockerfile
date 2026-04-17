@@ -33,6 +33,7 @@ RUN mkdir -p backend/runs backend/tmp
 RUN chmod +x start.sh
 
 ENV PYTHONPATH=$HOME/app/backend:$PYTHONPATH
+ENV MAX_UPLOAD_MB=500
 
 # Tell your start.sh script to boot Streamlit on 7860 (the only port HF exposes)
 ENV PORT=7860

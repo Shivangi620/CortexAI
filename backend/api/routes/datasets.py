@@ -36,6 +36,28 @@ def _save_uploaded_file(dataset_id: str, filename: str, payload: bytes) -> str:
     return file_path
 
 
+async def _stream_upload_to_file(dataset_id: str, filename: str, upload: UploadFile) -> str:
+    ext = os.path.splitext(filename or "")[1].lower() or ".csv"
+    file_path = os.path.join("tmp", f"{dataset_id}{ext}")
+    os.makedirs("tmp", exist_ok=True)
+
+    try:
+        with open(file_path, "wb") as buffer:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                buffer.write(chunk)
+    except Exception:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise
+    finally:
+        await upload.close()
+
+    return file_path
+
+
 def _persist_dataframe_as_csv(dataset_id: str, df):
     csv_path = os.path.join("tmp", f"{dataset_id}.csv")
     df.to_csv(csv_path, index=False)
@@ -236,12 +258,7 @@ async def upload_dataset(
     filename = file.filename or "upload.csv"
 
     try:
-        raw_bytes = await file.read()
-    except Exception as e:
-        return {"error": f"Failed to save upload: {e}"}
-
-    try:
-        uploaded_path = _save_uploaded_file(dataset_id, filename, raw_bytes)
+        uploaded_path = await _stream_upload_to_file(dataset_id, filename, file)
     except Exception as e:
         return {"error": f"Failed to save upload: {e}"}
 

@@ -12,6 +12,7 @@ export REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}"
 export CELERY_BROKER_URL="${CELERY_BROKER_URL:-$REDIS_URL}"
 export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-$REDIS_URL}"
 export AUTOML_API_URL="${AUTOML_API_URL:-http://127.0.0.1:8000/api}"
+export MAX_UPLOAD_MB="${MAX_UPLOAD_MB:-500}"
 
 mkdir -p /tmp/nginx_client_body /tmp/nginx_proxy /tmp/nginx_fastcgi /tmp/nginx_uwsgi /tmp/nginx_scgi
 
@@ -46,6 +47,7 @@ python -m streamlit run app.py \
     --server.headless true \
     --server.enableCORS false \
     --server.enableXsrfProtection false \
+    --server.maxUploadSize "${MAX_UPLOAD_MB}" \
     --browser.gatherUsageStats false &
 FRONTEND_PID=$!
 

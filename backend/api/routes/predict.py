@@ -10,6 +10,7 @@ import pandas as pd
 from infra.database import get_db, JobModel
 from infra.result_contract import normalize_results
 from infra.storage import get_schema_path
+from api.routes.datasets import _stream_upload_to_file
 from core.file_loader import load_dataframe
 
 router = APIRouter(prefix="/api", tags=["predict"])
@@ -184,11 +185,19 @@ async def contract_check(job_id: str, file: UploadFile = File(...)):
         except Exception:
             contract_schema = {}
 
+    temp_path = None
     try:
-        raw_bytes = await file.read()
-        df = load_dataframe(contents=raw_bytes, filename=file.filename or "inference.csv")
+        temp_path = await _stream_upload_to_file(
+            f"contract_{job_id}_{os.urandom(4).hex()}",
+            file.filename or "inference.csv",
+            file,
+        )
+        df = load_dataframe(filepath=temp_path)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not read inference file: {e}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
     incoming_columns = list(df.columns)
     missing = sorted(set(expected_features) - set(incoming_columns))
