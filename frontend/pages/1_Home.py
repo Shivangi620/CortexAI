@@ -9,7 +9,7 @@ from ui_shell import (
     render_workspace_banner,
 )
 
-API_URL = "http://localhost:8000/api"
+API_URL = "http://localhost:7860/api"
 
 st.set_page_config(page_title="Home - AutoML Studio", page_icon="🏠", layout="wide")
 

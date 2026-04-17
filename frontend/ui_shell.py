@@ -4,7 +4,7 @@ from typing import Iterable, Optional
 import requests
 import streamlit as st
 
-API_URL = "http://localhost:8000/api"
+API_URL = "http://localhost:7860/api"
 
 SESSION_DEFAULTS = {
     "dataset_id": None,

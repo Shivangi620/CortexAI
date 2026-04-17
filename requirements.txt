@@ -30,6 +30,7 @@ Pillow>=10.3.0
 # ── Async / Background Jobs ─────────────────────────────
 celery==5.4.0
 redis==5.0.4
+httpx>=0.27.0
 
 # ── Database ────────────────────────────────────────────
 sqlalchemy==2.0.30
