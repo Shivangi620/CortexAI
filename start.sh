@@ -1,59 +1,39 @@
 #!/bin/bash
-set -e
+
+# 🛡️ ROBUST START SCRIPT FOR HUGGING FACE SPACES
+# This script launches Redis, FastAPI, Celery, and Streamlit in one container.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-cleanup() {
-  echo "Shutting down services..."
-  [ -n "$BACKEND_PID" ] && kill "$BACKEND_PID" 2>/dev/null || true
-  [ -n "$FRONTEND_PID" ] && kill "$FRONTEND_PID" 2>/dev/null || true
-  [ -n "$REDIS_PID" ] && kill "$REDIS_PID" 2>/dev/null || true
-  exit 0
-}
-trap cleanup INT TERM
-
 export PYTHONPATH="$SCRIPT_DIR/backend:$PYTHONPATH"
+export HOME="/home/user"
 
-# Start Redis locally if available
-if command -v redis-server >/dev/null 2>&1; then
-  echo "Starting local Redis..."
-  redis-server --daemonize yes
-  sleep 1
-  if ! redis-cli ping >/dev/null 2>&1; then
-    echo "Redis failed to start. Continuing without local Redis."
-  else
-    echo "Redis is running."
-  fi
-else
-  echo "redis-server not installed; skipping local Redis startup."
-fi
+# 1. Start Redis (Internal Broker)
+# We run it in the background using & and point it to /tmp for write access.
+echo "Starting Redis..."
+redis-server --port 6379 --dir /tmp --dbfilename dump.rdb --daemonize no &
+REDIS_PID=$!
 
-# Start backend on internal port
+# 2. Start FastAPI Backend (Internal API)
+echo "Starting FastAPI Backend..."
 cd "$SCRIPT_DIR/backend"
 python -m uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 600 &
 BACKEND_PID=$!
 
-echo "Waiting for backend to start..."
-for i in {1..20}; do
-  if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then
-    echo "Backend ready."
-    break
-  fi
-  sleep 1
-done
+# 3. Start Celery Worker (Task Processor)
+echo "Starting Celery Worker..."
+# We run this from the backend directory where core.worker is accessible
+python -m celery -A core.worker.celery_app worker --loglevel=info --concurrency=1 &
+WORKER_PID=$!
 
-# Start frontend on Railway's assigned port
+# 4. Start Streamlit Frontend (Public UI)
+echo "Starting Streamlit Frontend on port ${PORT:-7860}..."
 cd "$SCRIPT_DIR/frontend"
-PORT=${PORT:-8501}  # Use Railway's PORT env var, default to 8501
-python -m streamlit run app.py --server.port $PORT --server.headless true --server.address 0.0.0.0 &
+python -m streamlit run app.py --server.port "${PORT:-7860}" --server.headless true --server.address 0.0.0.0 &
 FRONTEND_PID=$!
 
-echo "Frontend starting on port $PORT..."
+echo "🚀 All services launched!"
 
-echo "AutoML Studio services are now running."
-echo "Backend: http://127.0.0.1:8000 (internal)"
-echo "Frontend: http://0.0.0.0:$PORT (external)"
-
-tail --pid="$FRONTEND_PID" -f /dev/null
-wait -n "$BACKEND_PID" "$FRONTEND_PID"
+# Keep the script alive. If the Frontend or Backend fails, the container should stop.
+wait -n $FRONTEND_PID $BACKEND_PID

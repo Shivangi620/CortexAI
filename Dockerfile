@@ -26,6 +26,8 @@ COPY --chown=user . .
 # Create necessary directories for the backend
 RUN mkdir -p backend/runs backend/tmp
 
+RUN chmod +x start.sh
+
 ENV PYTHONPATH=$HOME/app/backend:$PYTHONPATH
 
 # Tell your start.sh script to boot Streamlit on 7860 (the only port HF exposes)
