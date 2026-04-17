@@ -1,3 +1,12 @@
+---
+title: AutoML Studio
+emoji: ✨
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # 🎨 AutoML Studio
 
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
