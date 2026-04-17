@@ -184,22 +184,6 @@ class DriftSchedule(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class ModelRegistryEntry(Base):
-    __tablename__ = "model_registry"
-
-    id = Column(
-        String,
-        primary_key=True,
-        index=True,
-        default=lambda: __import__("uuid").uuid4().hex,
-    )
-    run_id = Column(String, index=True)
-    label = Column(String, nullable=True)
-    note = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
 class TeamNote(Base):
     __tablename__ = "team_notes"
 
@@ -290,14 +274,6 @@ def _run_migrations():
             critical_threshold TEXT,
             last_alert_status TEXT,
             last_alert_summary TEXT,
-            created_at      DATETIME,
-            updated_at      DATETIME
-        )""",
-        """CREATE TABLE IF NOT EXISTS model_registry (
-            id              TEXT PRIMARY KEY,
-            run_id          TEXT,
-            label           TEXT,
-            note            TEXT,
             created_at      DATETIME,
             updated_at      DATETIME
         )""",

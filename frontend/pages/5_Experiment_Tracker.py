@@ -120,12 +120,7 @@ st.markdown(
             <div class="tracker-panel__title">Battle Arena</div>
             <div class="tracker-panel__copy">Compare 2 to 4 models visually, inspect score trade-offs, and review configuration differences in one place.</div>
         </div>
-        <div class="tracker-panel">
-            <div class="tracker-panel__eyebrow">Registry</div>
-            <div class="tracker-panel__title">Promotion Workflow</div>
-            <div class="tracker-panel__copy">Label runs as champion, challenger, candidate, or archived and attach shared team notes.</div>
         </div>
-    </div>
     """,
     unsafe_allow_html=True,
 )
@@ -155,7 +150,6 @@ if selected_job_id:
             st.success("Workspace updated with the selected run.")
 
     status_payload = api_json(f"/status/{selected_job_id}", timeout=10)
-    registry_payload = api_json(f"/experiments/{selected_run.get('id')}/registry", timeout=10)
     notes_payload = api_json(f"/notes/run/{selected_run.get('id')}", timeout=10)
     if status_payload.get("error"):
         st.info(f"Run history is temporarily unavailable: {status_payload['error']}")
@@ -185,34 +179,6 @@ if selected_job_id:
                 with st.expander("Reasoning Stream", expanded=False):
                     for line in reasoning[:25]:
                         st.write(f"• {line}")
-
-        st.markdown("#### 🏷️ Model Registry")
-        reg_left, reg_right = st.columns([0.7, 1.3])
-        with reg_left:
-            registry_label = st.selectbox(
-                "Registry Label",
-                ["None", "Champion", "Challenger", "Candidate", "Archived"],
-                index=["None", "Champion", "Challenger", "Candidate", "Archived"].index(
-                    (registry_payload.get("label") or "None").title() if (registry_payload.get("label") or "").title() in ["None", "Champion", "Challenger", "Candidate", "Archived"] else "None"
-                ),
-                key=f"registry_label_{selected_run.get('id')}",
-            )
-        with reg_right:
-            registry_note = st.text_input(
-                "Registry Note",
-                value=registry_payload.get("note") or "",
-                key=f"registry_note_{selected_run.get('id')}",
-            )
-        if st.button("💾 Save Registry Status", width="stretch", key=f"save_registry_{selected_run.get('id')}"):
-            try:
-                requests.post(
-                    f"{API_URL}/experiments/{selected_run.get('id')}/registry",
-                    json={"label": None if registry_label == "None" else registry_label.lower(), "note": registry_note},
-                    timeout=15,
-                )
-                st.success("Registry updated.")
-            except Exception as e:
-                st.error(f"Registry update failed: {e}")
 
         st.markdown("#### 📝 Team Notes")
         new_note = st.text_area("Add note for this run", key=f"team_note_{selected_run.get('id')}", height=100)

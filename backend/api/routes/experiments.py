@@ -5,7 +5,7 @@ import json
 import math
 from pydantic import BaseModel
 
-from infra.database import get_db, ExperimentRun, ModelRegistryEntry, TeamNote, WorkspaceModel, JobModel
+from infra.database import get_db, ExperimentRun, TeamNote, WorkspaceModel, JobModel
 from infra.result_contract import sanitize_for_json
 from services.studio_service import experiment_diff, list_notifications
 
@@ -164,32 +164,6 @@ def get_experiment(run_id: str):
             "metrics": sanitize_for_json(metrics),
             "leaderboard": sanitize_for_json(leaderboard),
         }
-
-
-@router.get("/experiments/{run_id}/registry")
-def get_registry(run_id: str):
-    with get_db() as db:
-        row = db.query(ModelRegistryEntry).filter(ModelRegistryEntry.run_id == run_id).first()
-        if not row:
-            return {"run_id": run_id, "label": None, "note": None}
-        return {"run_id": run_id, "label": row.label, "note": row.note}
-
-
-class RegistryRequest(BaseModel):
-    label: str
-    note: Optional[str] = None
-
-
-@router.post("/experiments/{run_id}/registry")
-def save_registry(run_id: str, req: RegistryRequest):
-    with get_db() as db:
-        row = db.query(ModelRegistryEntry).filter(ModelRegistryEntry.run_id == run_id).first()
-        if row:
-            row.label = req.label
-            row.note = req.note
-        else:
-            db.add(ModelRegistryEntry(run_id=run_id, label=req.label, note=req.note))
-    return {"run_id": run_id, "label": req.label, "note": req.note}
 
 
 @router.get("/notes/{entity_type}/{entity_id}")

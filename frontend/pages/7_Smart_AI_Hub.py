@@ -24,7 +24,7 @@ profile = st.session_state.get("profile", {})
 render_page_shell(
     title="Smart AI Hub",
     eyebrow="Advanced Utilities",
-    description="Use ensemble building, what-if simulation, synthetic expansion, and natural language helpers to extend the core training workflow.",
+    description="Use ensemble building, what-if simulation and natural language helpers to extend the core training workflow.",
     stats=[
         ("Dataset", dataset_id[:8] if dataset_id else "No dataset"),
         ("Run", job_id[:8] if job_id else "No run"),
@@ -40,10 +40,9 @@ render_section_intro(
     "The redesign keeps each capability in a dedicated tab while preserving the underlying API behavior.",
 )
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "🧩 Ensemble Builder",
     "🧪 Model Simulation (What-if)",
-    "🧬 Data Augmentation",
     "🗣️ Natural Language ML",
 ])
 
@@ -209,104 +208,6 @@ with tab2:
     st.markdown("</div>", unsafe_allow_html=True)
 
 with tab3:
-    st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
-    st.markdown("### 🧬 Synthetic Data Generator")
-    if not dataset_id:
-        st.info("Upload data on Home page first.")
-    else:
-        n_syn = st.number_input("Synthetic rows to add", 10, 50000, 1000)
-        if st.button("🧬 Generate", width="stretch"):
-            with st.spinner("Generating..."):
-                s_res = requests.post(f"{API_URL}/synthetic/{dataset_id}", params={"n_rows": n_syn}, timeout=120)
-                if s_res.status_code == 200:
-                    data = s_res.json()
-                    st.session_state["synthetic_result"] = data
-                    st.success("Dataset expanded.")
-                else:
-                    st.error("Synthetic data generation failed.")
-
-        syn = st.session_state.get("synthetic_result")
-        if syn and syn.get("new_dataset_id"):
-            judge_payload = {}
-            try:
-                judge_res = requests.get(f"{API_URL}/synthetic/judge/{syn['new_dataset_id']}", timeout=30)
-                judge_payload = judge_res.json() if judge_res.status_code == 200 else {"error": f"HTTP {judge_res.status_code}"}
-            except Exception as e:
-                judge_payload = {"error": str(e)}
-
-            st.markdown("#### Generated Dataset")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Original Rows", syn.get("original_rows", 0))
-            c2.metric("Added Rows", syn.get("synthetic_rows_added", 0))
-            c3.metric("Total Rows", syn.get("total_rows", 0))
-
-            preview = syn.get("preview") or []
-            if preview:
-                render_safe_dataframe(pd.DataFrame(preview), width="stretch", hide_index=True)
-
-            st.markdown("#### 📊 Synthetic vs Original Comparison")
-            original_profile = syn.get("original_profile") or profile
-            new_profile = syn.get("profile") or {}
-            diff = syn.get("profile_diff") or {}
-            cmp1, cmp2, cmp3, cmp4 = st.columns(4)
-            cmp1.metric("Rows", new_profile.get("rows", 0), diff.get("rows", 0))
-            cmp2.metric("Columns", new_profile.get("cols", 0), diff.get("cols", 0))
-            cmp3.metric("Missing %", new_profile.get("missing_pct", 0), diff.get("missing_pct", 0))
-            cmp4.metric(
-                "Imbalance",
-                new_profile.get("imbalance", "—"),
-                "updated" if new_profile.get("imbalance") != original_profile.get("imbalance") else "same",
-            )
-
-            compare_rows = [
-                {"Metric": "Rows", "Original": original_profile.get("rows"), "Augmented": new_profile.get("rows")},
-                {"Metric": "Columns", "Original": original_profile.get("cols"), "Augmented": new_profile.get("cols")},
-                {"Metric": "Missing %", "Original": original_profile.get("missing_pct"), "Augmented": new_profile.get("missing_pct")},
-                {"Metric": "Suggested Target", "Original": original_profile.get("suggested_target"), "Augmented": new_profile.get("suggested_target")},
-            ]
-            render_safe_dataframe(pd.DataFrame(compare_rows), width="stretch", hide_index=True)
-
-            st.markdown("#### 🧪 Synthetic Quality Panel")
-            if judge_payload.get("error"):
-                st.info(judge_payload["error"])
-            else:
-                q1, q2, q3 = st.columns(3)
-                q1.metric("Realism Score", judge_payload.get("realism_score", "—"))
-                q2.metric("Verdict", judge_payload.get("verdict", "—"))
-                q3.metric("Rows Evaluated", judge_payload.get("rows_evaluated", "—"))
-                notes = judge_payload.get("notes", []) or []
-                if notes:
-                    for note in notes:
-                        st.caption(f"• {note}")
-                privacy_risk = "Review" if float(judge_payload.get("realism_score", 0) or 0) > 95 else "Low"
-                corr_match = "Strong" if float(judge_payload.get("realism_score", 0) or 0) >= 85 else "Moderate"
-                panel_df = pd.DataFrame(
-                    [
-                        {"Check": "Distributions", "Assessment": judge_payload.get("verdict", "—")},
-                        {"Check": "Correlations", "Assessment": corr_match},
-                        {"Check": "Target Behavior", "Assessment": "Aligned" if new_profile.get("suggested_target") == original_profile.get("suggested_target") else "Changed"},
-                        {"Check": "Privacy Similarity Risk", "Assessment": privacy_risk},
-                    ]
-                )
-                render_safe_dataframe(panel_df, width="stretch", hide_index=True)
-
-            btn_col1, btn_col2 = st.columns(2)
-            with btn_col1:
-                if st.button("🧪 Retest With Augmented Dataset", type="primary", width="stretch"):
-                    st.session_state["dataset_id"] = syn["new_dataset_id"]
-                    if syn.get("profile"):
-                        st.session_state["profile"] = syn["profile"]
-                    st.success("Augmented dataset loaded into the workspace.")
-                    st.switch_page("pages/1_Home.py")
-            with btn_col2:
-                if st.button("🧬 Inspect Augmented DNA", width="stretch"):
-                    st.session_state["dataset_id"] = syn["new_dataset_id"]
-                    if syn.get("profile"):
-                        st.session_state["profile"] = syn["profile"]
-                    st.switch_page("pages/2_Dataset_DNA.py")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with tab4:
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.markdown("### 🗣️ NL → Machine Learning")
     st.write("Describe your ML goal in plain English.")

@@ -6,7 +6,7 @@ CODIN is an end-to-end AutoML studio built with:
 
 - `FastAPI` for APIs and backend orchestration
 - `Streamlit` for the multi-page workspace UI
-- `SQLAlchemy + SQLite` for datasets, jobs, experiment history, notes, registry labels, and drift records
+- `SQLAlchemy + SQLite` for datasets, jobs, experiment history, notes, and drift records
 - `scikit-learn`, `LightGBM`, `Optuna`, and custom pipeline logic for training and evaluation
 
 The product is designed as a guided ML workspace rather than a single training script. A user can ingest data, profile it, train models, inspect results, simulate predictions, detect drift, generate synthetic data, compare runs, and export reports from the same app.
@@ -129,7 +129,6 @@ Key features:
 - global leaderboard
 - run history viewer
 - reasoning stream viewer
-- registry labels: champion, challenger, candidate, archived
 - team notes
 - side-by-side run comparison
 - run diff engine
@@ -138,7 +137,7 @@ Key features:
 Logic:
 
 - Each completed job can be persisted as an `ExperimentRun`
-- Registry and note models allow lightweight model governance without needing an external MLOps platform
+- Notes and experiment models allow lightweight run annotations without needing an external MLOps platform
 
 ### 6. Drift Monitor
 
@@ -367,11 +366,9 @@ Current behavior:
 - stores run-level summary information in `experiment_runs`
 - powers run archive and comparison UI
 
-### Registry Labels
-
-- lightweight promotion workflow for production candidates
-
 ### Team Notes
+
+- lets users annotate runs without leaving the product
 
 - lets users annotate runs without leaving the product
 
@@ -409,7 +406,7 @@ Current behavior:
 - `ExperimentRun`: completed-run archive
 - `DriftCheck`: drift history
 - `DriftSchedule`: cadence configuration
-- `ModelRegistryEntry` and `TeamNote`: governance helpers
+- `TeamNote`: run annotation helper
 
 ### Run Artifacts
 

@@ -23,12 +23,25 @@ ensure_session_state()
 st.session_state.setdefault("upload_preview_records", [])
 st.session_state.setdefault("upload_ingest_summary", {})
 st.session_state.setdefault("home_merge_preview", {})
-st.session_state.setdefault("goal_choice", get_query_param("goal") or "🎯 Performance(best results)")
-st.session_state.setdefault("mode_choice", get_query_param("mode") or "⚖️ Balanced (Standard optimization)")
-st.session_state.setdefault("eval_metric_choice", get_query_param("metric") or "Accuracy")
-st.session_state.setdefault("handle_imbalance_choice", (get_query_param("imbalance") or "false").lower() == "true")
-st.session_state.setdefault("auto_clean_choice", (get_query_param("auto_clean") or "true").lower() == "true")
-st.session_state.setdefault("workspace_name_choice", get_query_param("workspace") or "Default Workspace")
+st.session_state.setdefault(
+    "goal_choice", get_query_param("goal") or "🎯 Performance(best results)"
+)
+st.session_state.setdefault(
+    "mode_choice", get_query_param("mode") or "⚖️ Balanced (Standard optimization)"
+)
+st.session_state.setdefault(
+    "eval_metric_choice", get_query_param("metric") or "Accuracy"
+)
+st.session_state.setdefault(
+    "handle_imbalance_choice",
+    (get_query_param("imbalance") or "false").lower() == "true",
+)
+st.session_state.setdefault(
+    "auto_clean_choice", (get_query_param("auto_clean") or "true").lower() == "true"
+)
+st.session_state.setdefault(
+    "workspace_name_choice", get_query_param("workspace") or "Default Workspace"
+)
 st.session_state.setdefault("preset_choice", get_query_param("preset") or "Balanced")
 st.session_state.setdefault("show_archived_datasets", False)
 try:
@@ -63,7 +76,9 @@ if st.session_state.get("_workspace_restored") and st.session_state.get("dataset
     )
 top_actions = st.columns([1, 1, 2])
 with top_actions[0]:
-    if st.session_state.get("dataset_id") and st.button("Remove Current Dataset", width="stretch"):
+    if st.session_state.get("dataset_id") and st.button(
+        "Remove Current Dataset", width="stretch"
+    ):
         clear_workspace_state()
         st.rerun()
 with top_actions[1]:
@@ -75,6 +90,7 @@ render_section_intro(
     "This page keeps the high-friction steps together: file upload, auto-detection, training preferences, advanced controls, and export options.",
 )
 
+
 @st.cache_data(show_spinner=False, ttl=20)
 def get_training_forecast_cached(payload_json: str):
     payload = json.loads(payload_json)
@@ -84,6 +100,7 @@ def get_training_forecast_cached(payload_json: str):
         timeout=20,
     )
     return forecast_res.json() if forecast_res.status_code == 200 else {}
+
 
 st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
 st.markdown("### 🗂 Dataset Manager")
@@ -108,15 +125,25 @@ if dataset_catalog:
         f"{(item.get('display_name') or item.get('source_type') or 'dataset')} · {(item.get('rows') or 0)} rows · {(item.get('id') or '')[:8]}{' · archived' if item.get('archived') else ''}": item
         for item in dataset_catalog
     }
-    selected_dataset_label = st.selectbox("Dataset Catalog", options=list(dataset_options.keys()), key="dataset_manager_select")
+    selected_dataset_label = st.selectbox(
+        "Dataset Catalog",
+        options=list(dataset_options.keys()),
+        key="dataset_manager_select",
+    )
     selected_dataset = dataset_options.get(selected_dataset_label, {})
     action_cols = st.columns(4)
     with action_cols[0]:
-        if st.button("Load", width="stretch", key="dataset_manager_load") and selected_dataset.get("id"):
+        if st.button(
+            "Load", width="stretch", key="dataset_manager_load"
+        ) and selected_dataset.get("id"):
             st.session_state["dataset_id"] = selected_dataset["id"]
             try:
-                profile_resp = requests.get(f"{API_URL}/dataset/{selected_dataset['id']}", timeout=10)
-                profile_data = profile_resp.json() if profile_resp.status_code == 200 else {}
+                profile_resp = requests.get(
+                    f"{API_URL}/dataset/{selected_dataset['id']}", timeout=10
+                )
+                profile_data = (
+                    profile_resp.json() if profile_resp.status_code == 200 else {}
+                )
                 if not profile_data.get("error"):
                     st.session_state["profile"] = profile_data
             except Exception:
@@ -126,25 +153,51 @@ if dataset_catalog:
             st.rerun()
     with action_cols[1]:
         archive_label = "Unarchive" if selected_dataset.get("archived") else "Archive"
-        if st.button(archive_label, width="stretch", key="dataset_manager_archive") and selected_dataset.get("id"):
+        if st.button(
+            archive_label, width="stretch", key="dataset_manager_archive"
+        ) and selected_dataset.get("id"):
             endpoint = "unarchive" if selected_dataset.get("archived") else "archive"
-            requests.post(f"{API_URL}/dataset/{selected_dataset['id']}/{endpoint}", timeout=15)
+            requests.post(
+                f"{API_URL}/dataset/{selected_dataset['id']}/{endpoint}", timeout=15
+            )
             st.rerun()
     with action_cols[2]:
-        if st.button("Remove From Workspace", width="stretch", key="dataset_manager_clear"):
+        if st.button(
+            "Remove From Workspace", width="stretch", key="dataset_manager_clear"
+        ):
             clear_workspace_state()
             st.rerun()
     with action_cols[3]:
-        if st.button("Delete Permanently", width="stretch", key="dataset_manager_delete") and selected_dataset.get("id"):
+        if st.button(
+            "Delete Permanently", width="stretch", key="dataset_manager_delete"
+        ) and selected_dataset.get("id"):
             requests.delete(f"{API_URL}/dataset/{selected_dataset['id']}", timeout=20)
             if st.session_state.get("dataset_id") == selected_dataset.get("id"):
                 clear_workspace_state()
             st.rerun()
     catalog_df = pd.DataFrame(dataset_catalog)
-    render_safe_dataframe(catalog_df[[c for c in ["display_name", "source_type", "rows", "cols", "created_at", "archived", "id"] if c in catalog_df.columns]], width="stretch", hide_index=True)
+    render_safe_dataframe(
+        catalog_df[
+            [
+                c
+                for c in [
+                    "display_name",
+                    "source_type",
+                    "rows",
+                    "cols",
+                    "created_at",
+                    "archived",
+                    "id",
+                ]
+                if c in catalog_df.columns
+            ]
+        ],
+        width="stretch",
+        hide_index=True,
+    )
 else:
     st.caption("No datasets in the catalog yet.")
-st.markdown('</div>', unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("### Import Mode", unsafe_allow_html=True)
 import_mode = st.segmented_control(
@@ -197,12 +250,20 @@ if import_mode == "Upload File":
     )
 
     if uploaded_file is not None:
-        last_file = st.session_state.get('last_analyzed_file')
-        current_file_key = f"{uploaded_file.name}_{uploaded_file.size}_{upload_handling}"
+        last_file = st.session_state.get("last_analyzed_file")
+        current_file_key = (
+            f"{uploaded_file.name}_{uploaded_file.size}_{upload_handling}"
+        )
 
         if last_file != current_file_key:
             with st.spinner("🧬 Analyzing Neural DNA..."):
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/octet-stream")}
+                files = {
+                    "file": (
+                        uploaded_file.name,
+                        uploaded_file.getvalue(),
+                        "application/octet-stream",
+                    )
+                }
                 pdf_mode = "text"
                 if upload_handling == "PDF - Tables":
                     pdf_mode = "tables"
@@ -218,34 +279,46 @@ if import_mode == "Upload File":
                         if "error" in data:
                             st.error(data["error"])
                         else:
-                            st.session_state['dataset_id'] = data['dataset_id']
-                            st.session_state['profile'] = data['profile']
-                            st.session_state["upload_preview_records"] = data.get("preview_records", [])
-                            st.session_state["upload_ingest_summary"] = data.get("ingest_summary", {})
-                            st.session_state['last_analyzed_file'] = current_file_key
+                            st.session_state["dataset_id"] = data["dataset_id"]
+                            st.session_state["profile"] = data["profile"]
+                            st.session_state["upload_preview_records"] = data.get(
+                                "preview_records", []
+                            )
+                            st.session_state["upload_ingest_summary"] = data.get(
+                                "ingest_summary", {}
+                            )
+                            st.session_state["last_analyzed_file"] = current_file_key
                             imported_job_id = data.get("imported_job_id")
                             if imported_job_id:
-                                st.session_state['job_id'] = imported_job_id
-                                st.success(f"✅ **{uploaded_file.name}** restored successfully!")
-                                st.info("This export bundle brought back the training dataset and its completed run. You can jump straight to Results Console or retrain from here.")
+                                st.session_state["job_id"] = imported_job_id
+                                st.success(
+                                    f"✅ **{uploaded_file.name}** restored successfully!"
+                                )
+                                st.info(
+                                    "This export bundle brought back the training dataset and its completed run. You can jump straight to Results Console or retrain from here."
+                                )
                             else:
-                                st.success(f"✅ **{uploaded_file.name}** processed successfully!")
+                                st.success(
+                                    f"✅ **{uploaded_file.name}** processed successfully!"
+                                )
 
                             try:
                                 detect_res = requests.post(
                                     f"{API_URL}/detect",
-                                    json={"dataset_id": data['dataset_id']},
+                                    json={"dataset_id": data["dataset_id"]},
                                     timeout=15,
                                 )
                                 if detect_res.status_code == 200:
-                                    st.session_state['auto_detect'] = detect_res.json()
+                                    st.session_state["auto_detect"] = detect_res.json()
                             except Exception:
                                 pass
                             sync_workspace_query_params()
                     else:
                         st.error(f"Backend error: {res.status_code}")
                 except requests.exceptions.ConnectionError:
-                    st.error("❌ Cannot reach backend. The internal API service may still be starting.")
+                    st.error(
+                        "❌ Cannot reach backend. The internal API service may still be starting."
+                    )
 elif import_mode == "Connectors":
     connector_left, connector_right = st.columns([1.1, 0.9])
     with connector_left:
@@ -286,17 +359,25 @@ elif import_mode == "Connectors":
                     if res.status_code == 200 and not data.get("error"):
                         st.session_state["dataset_id"] = data["dataset_id"]
                         st.session_state["profile"] = data["profile"]
-                        st.session_state["upload_preview_records"] = data.get("preview_records", [])
-                        st.session_state["upload_ingest_summary"] = data.get("ingest_summary", {})
+                        st.session_state["upload_preview_records"] = data.get(
+                            "preview_records", []
+                        )
+                        st.session_state["upload_ingest_summary"] = data.get(
+                            "ingest_summary", {}
+                        )
                         sync_workspace_query_params()
                         st.success(f"{connector_type} import completed.")
                     else:
-                        st.error(data.get("error", f"Import failed: HTTP {res.status_code}"))
+                        st.error(
+                            data.get("error", f"Import failed: HTTP {res.status_code}")
+                        )
                 except Exception as e:
                     st.error(f"Import failed: {e}")
 else:
     st.markdown("### Dataset Merge Studio", unsafe_allow_html=True)
-    st.caption("Combine two datasets with guided pickers, preview join quality, then load the merged dataset into the workspace.")
+    st.caption(
+        "Combine two datasets with guided pickers, preview join quality, then load the merged dataset into the workspace."
+    )
     try:
         ds_payload = requests.get(f"{API_URL}/datasets", timeout=10).json()
         dataset_items = ds_payload.get("datasets", [])
@@ -337,13 +418,19 @@ else:
                 index=0,
             )
             left_dataset = dataset_options.get(left_label, {})
-            left_dataset_id = left_dataset.get("id") or st.session_state.get("dataset_id") or ""
+            left_dataset_id = (
+                left_dataset.get("id") or st.session_state.get("dataset_id") or ""
+            )
             left_columns = left_dataset.get("columns") or []
-            left_join_key = st.selectbox(
-                "Left Join Key",
-                options=left_columns,
-                index=0 if left_columns else 0,
-            ) if left_columns else ""
+            left_join_key = (
+                st.selectbox(
+                    "Left Join Key",
+                    options=left_columns,
+                    index=0 if left_columns else 0,
+                )
+                if left_columns
+                else ""
+            )
         with merge_right:
             right_label = st.selectbox(
                 "Right Dataset",
@@ -353,13 +440,23 @@ else:
             right_dataset = dataset_options.get(right_label, {})
             right_dataset_id = right_dataset.get("id") or ""
             right_columns = right_dataset.get("columns") or []
-            right_join_key = st.selectbox(
-                "Right Join Key",
-                options=right_columns,
-                index=0 if right_columns else 0,
-            ) if right_columns else ""
+            right_join_key = (
+                st.selectbox(
+                    "Right Join Key",
+                    options=right_columns,
+                    index=0 if right_columns else 0,
+                )
+                if right_columns
+                else ""
+            )
         merge_type = st.selectbox("Join Type", ["inner", "left", "right", "outer"])
-        merge_signature = (left_dataset_id, right_dataset_id, left_join_key, right_join_key, merge_type)
+        merge_signature = (
+            left_dataset_id,
+            right_dataset_id,
+            left_join_key,
+            right_join_key,
+            merge_type,
+        )
         if st.session_state.get("home_merge_signature") != merge_signature:
             st.session_state["home_merge_signature"] = merge_signature
             st.session_state["home_merge_preview"] = {}
@@ -371,7 +468,9 @@ else:
     if st.button("🔍 Preview Merge", width="stretch"):
         if left_dataset_id == right_dataset_id:
             st.error("Pick two different datasets.")
-        elif not all([left_dataset_id, right_dataset_id, left_join_key, right_join_key]):
+        elif not all(
+            [left_dataset_id, right_dataset_id, left_join_key, right_join_key]
+        ):
             st.error("Choose both datasets and both join keys.")
         else:
             try:
@@ -396,11 +495,21 @@ else:
             st.error(merge_preview["error"])
         else:
             preview_cols = st.columns(5)
-            preview_cols[0].metric("Estimated Rows", merge_preview.get("estimated_rows", 0))
-            preview_cols[1].metric("Overlap Keys", merge_preview.get("overlapping_keys", 0))
-            preview_cols[2].metric("Left Match %", f"{merge_preview.get('left_match_pct', 0)}%")
-            preview_cols[3].metric("Right Match %", f"{merge_preview.get('right_match_pct', 0)}%")
-            preview_cols[4].metric("Row Multiplier", merge_preview.get("estimated_row_multiplier", "—"))
+            preview_cols[0].metric(
+                "Estimated Rows", merge_preview.get("estimated_rows", 0)
+            )
+            preview_cols[1].metric(
+                "Overlap Keys", merge_preview.get("overlapping_keys", 0)
+            )
+            preview_cols[2].metric(
+                "Left Match %", f"{merge_preview.get('left_match_pct', 0)}%"
+            )
+            preview_cols[3].metric(
+                "Right Match %", f"{merge_preview.get('right_match_pct', 0)}%"
+            )
+            preview_cols[4].metric(
+                "Row Multiplier", merge_preview.get("estimated_row_multiplier", "—")
+            )
             st.caption(
                 f"Duplicates on join keys: left {merge_preview.get('left_duplicate_keys', 0)} · "
                 f"right {merge_preview.get('right_duplicate_keys', 0)}"
@@ -410,12 +519,16 @@ else:
                     "Join keys had different data types, so preview matching was normalized using string values."
                 )
             if merge_preview.get("preview_records"):
-                render_safe_dataframe(merge_preview["preview_records"], width="stretch", hide_index=True)
+                render_safe_dataframe(
+                    merge_preview["preview_records"], width="stretch", hide_index=True
+                )
 
     if st.button("🧬 Merge Datasets", width="stretch"):
         if left_dataset_id == right_dataset_id:
             st.error("Pick two different datasets.")
-        elif not all([left_dataset_id, right_dataset_id, left_join_key, right_join_key]):
+        elif not all(
+            [left_dataset_id, right_dataset_id, left_join_key, right_join_key]
+        ):
             st.error("Choose both datasets and both join keys.")
         else:
             with st.spinner("Merging datasets..."):
@@ -435,8 +548,12 @@ else:
                     if merge_res.status_code == 200 and not merge_data.get("error"):
                         st.session_state["dataset_id"] = merge_data["dataset_id"]
                         st.session_state["profile"] = merge_data["profile"]
-                        st.session_state["upload_preview_records"] = merge_data.get("preview_records", [])
-                        st.session_state["upload_ingest_summary"] = merge_data.get("ingest_summary", {})
+                        st.session_state["upload_preview_records"] = merge_data.get(
+                            "preview_records", []
+                        )
+                        st.session_state["upload_ingest_summary"] = merge_data.get(
+                            "ingest_summary", {}
+                        )
                         st.session_state["home_merge_preview"] = {}
                         sync_workspace_query_params()
                         st.success("Merged dataset loaded into workspace.")
@@ -465,7 +582,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if st.session_state.get('profile'):
+if st.session_state.get("profile"):
     ingest_summary = st.session_state.get("upload_ingest_summary") or {}
     preview_records = st.session_state.get("upload_preview_records") or []
 
@@ -480,7 +597,11 @@ if st.session_state.get('profile'):
             ingest_cols[3].metric("Preview Rows", len(preview_records))
 
         if any("ocr_text" in row for row in preview_records):
-            default_ocr = "\n".join(str(row.get("ocr_text", "")).strip() for row in preview_records if row.get("ocr_text"))
+            default_ocr = "\n".join(
+                str(row.get("ocr_text", "")).strip()
+                for row in preview_records
+                if row.get("ocr_text")
+            )
             reviewed_ocr = st.text_area(
                 "Editable OCR Review",
                 value=default_ocr,
@@ -498,12 +619,22 @@ if st.session_state.get('profile'):
                     if ocr_res.status_code == 200 and not ocr_data.get("error"):
                         st.session_state["dataset_id"] = ocr_data["dataset_id"]
                         st.session_state["profile"] = ocr_data["profile"]
-                        st.session_state["upload_preview_records"] = ocr_data.get("preview_records", [])
-                        st.session_state["upload_ingest_summary"] = ocr_data.get("ingest_summary", {})
+                        st.session_state["upload_preview_records"] = ocr_data.get(
+                            "preview_records", []
+                        )
+                        st.session_state["upload_ingest_summary"] = ocr_data.get(
+                            "ingest_summary", {}
+                        )
                         sync_workspace_query_params()
-                        st.success("OCR-reviewed dataset created and loaded into the workspace.")
+                        st.success(
+                            "OCR-reviewed dataset created and loaded into the workspace."
+                        )
                     else:
-                        st.error(ocr_data.get("error", "Failed to create OCR-reviewed dataset."))
+                        st.error(
+                            ocr_data.get(
+                                "error", "Failed to create OCR-reviewed dataset."
+                            )
+                        )
                 except Exception as e:
                     st.error(f"OCR review failed: {e}")
 
@@ -511,10 +642,10 @@ if st.session_state.get('profile'):
     detect = st.session_state.get("auto_detect")
     if detect and not detect.get("error"):
         suggested_t = detect.get("suggested_target")
-        task_type   = detect.get("task_type", "classification")
-        confidence  = detect.get("confidence", 0)
+        task_type = detect.get("task_type", "classification")
+        confidence = detect.get("confidence", 0)
         task_reason = detect.get("task_reason", "")
-        warnings    = detect.get("warnings", [])
+        warnings = detect.get("warnings", [])
 
         icon = "📈" if task_type == "regression" else "🔵"
         det_color = "#4CAF50" if confidence >= 80 else "#FFA500"
@@ -538,7 +669,7 @@ if st.session_state.get('profile'):
                 elif "🟡" in w:
                     st.info(w)
 
-    profile = st.session_state['profile']
+    profile = st.session_state["profile"]
     rows = profile.get("rows", "—")
     columns_count = len(profile.get("columns", []) or [])
     missing_total = profile.get("missing_values", 0)
@@ -556,30 +687,71 @@ if st.session_state.get('profile'):
     st.markdown("### ⚙️ Training Configuration")
 
     preset_defaults = {
-        "Fast": {"goal": "⚡ Speed(fast)", "mode": "⚡ Fast (Exploration only)", "cv": 3, "imbalance": False, "auto_clean": True},
-        "Balanced": {"goal": "⚖️ Balanced", "mode": "⚖️ Balanced (Standard optimization)", "cv": 5, "imbalance": False, "auto_clean": True},
-        "High Accuracy": {"goal": "🎯 Performance(best results)", "mode": "🧠 Full (Deep Bayesian Search)", "cv": 7, "imbalance": True, "auto_clean": True},
-        "Explainable": {"goal": "⚖️ Balanced", "mode": "⚖️ Balanced (Standard optimization)", "cv": 5, "imbalance": False, "auto_clean": True},
-        "Low Resource": {"goal": "⚡ Speed(fast)", "mode": "⚡ Fast (Exploration only)", "cv": 3, "imbalance": False, "auto_clean": True},
+        "Fast": {
+            "goal": "⚡ Speed(fast)",
+            "mode": "⚡ Fast (Exploration only)",
+            "cv": 3,
+            "imbalance": False,
+            "auto_clean": True,
+        },
+        "Balanced": {
+            "goal": "⚖️ Balanced",
+            "mode": "⚖️ Balanced (Standard optimization)",
+            "cv": 5,
+            "imbalance": False,
+            "auto_clean": True,
+        },
+        "High Accuracy": {
+            "goal": "🎯 Performance(best results)",
+            "mode": "🧠 Full (Deep Bayesian Search)",
+            "cv": 7,
+            "imbalance": True,
+            "auto_clean": True,
+        },
+        "Explainable": {
+            "goal": "⚖️ Balanced",
+            "mode": "⚖️ Balanced (Standard optimization)",
+            "cv": 5,
+            "imbalance": False,
+            "auto_clean": True,
+        },
+        "Low Resource": {
+            "goal": "⚡ Speed(fast)",
+            "mode": "⚡ Fast (Exploration only)",
+            "cv": 3,
+            "imbalance": False,
+            "auto_clean": True,
+        },
     }
 
-    columns = profile.get('columns', [])
-    suggested_target = profile.get('suggested_target')
+    columns = profile.get("columns", [])
+    suggested_target = profile.get("suggested_target")
     if not suggested_target or suggested_target not in columns:
         suggested_target = columns[-1] if columns else None
 
     default_idx = columns.index(suggested_target) if suggested_target in columns else 0
     st.info(f"💡 Auto-detected target column: **{suggested_target}**")
-    target_col = st.selectbox("🎯 Confirm or Change Target Column", columns, index=default_idx)
+    target_col = st.selectbox(
+        "🎯 Confirm or Change Target Column", columns, index=default_idx
+    )
 
     sanitizer_report = profile.get("sanitizer", {}) or {}
     sanitizer_logs = profile.get("sanitizer_logs", []) or []
     if sanitizer_report:
         san_cols = st.columns(4)
-        san_cols[0].metric("Rows After Cleanup", sanitizer_report.get("rows_after", rows))
-        san_cols[1].metric("Duplicates Removed", sanitizer_report.get("duplicate_rows_removed", 0))
-        san_cols[2].metric("Numeric Coercions", len(sanitizer_report.get("numeric_coercions", []) or []))
-        san_cols[3].metric("Datetime Columns", len(sanitizer_report.get("datetime_columns", []) or []))
+        san_cols[0].metric(
+            "Rows After Cleanup", sanitizer_report.get("rows_after", rows)
+        )
+        san_cols[1].metric(
+            "Duplicates Removed", sanitizer_report.get("duplicate_rows_removed", 0)
+        )
+        san_cols[2].metric(
+            "Numeric Coercions",
+            len(sanitizer_report.get("numeric_coercions", []) or []),
+        )
+        san_cols[3].metric(
+            "Datetime Columns", len(sanitizer_report.get("datetime_columns", []) or [])
+        )
         if sanitizer_logs:
             with st.expander("Shared Sanitizer Details", expanded=False):
                 for line in sanitizer_logs[:10]:
@@ -599,14 +771,18 @@ if st.session_state.get('profile'):
         st.markdown("<div style='height: 1.9rem'></div>", unsafe_allow_html=True)
         if st.button("Resume Last Run", width="stretch"):
             try:
-                resume_payload = requests.get(f"{API_URL}/workspaces/resume", timeout=10).json()
+                resume_payload = requests.get(
+                    f"{API_URL}/workspaces/resume", timeout=10
+                ).json()
                 if resume_payload.get("job_id"):
                     st.session_state["job_id"] = resume_payload["job_id"]
                     st.session_state["dataset_id"] = resume_payload.get("dataset_id")
                     sync_workspace_query_params(workspace=workspace_name)
                     st.switch_page("pages/4_Results_Console.py")
                 else:
-                    st.info(resume_payload.get("error", "No completed run available yet."))
+                    st.info(
+                        resume_payload.get("error", "No completed run available yet.")
+                    )
             except Exception as e:
                 st.error(f"Resume failed: {e}")
 
@@ -616,9 +792,13 @@ if st.session_state.get('profile'):
     if st.session_state.get("cv_folds_choice", 0) <= 1:
         st.session_state["cv_folds_choice"] = preset["cv"]
     if "handle_imbalance_choice" in st.session_state:
-        st.session_state["handle_imbalance_choice"] = st.session_state.get("handle_imbalance_choice", preset["imbalance"])
+        st.session_state["handle_imbalance_choice"] = st.session_state.get(
+            "handle_imbalance_choice", preset["imbalance"]
+        )
     if "auto_clean_choice" in st.session_state:
-        st.session_state["auto_clean_choice"] = st.session_state.get("auto_clean_choice", preset["auto_clean"])
+        st.session_state["auto_clean_choice"] = st.session_state.get(
+            "auto_clean_choice", preset["auto_clean"]
+        )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -626,16 +806,28 @@ if st.session_state.get('profile'):
             "Select Goal",
             ["🎯 Performance(best results)", "⚡ Speed(fast)", "⚖️ Balanced"],
             key="goal_choice",
-            index=["🎯 Performance(best results)", "⚡ Speed(fast)", "⚖️ Balanced"].index(goal),
-            help="Performance = widest model search | Speed = smaller fast pool | Balanced = strong middle ground"
+            index=[
+                "🎯 Performance(best results)",
+                "⚡ Speed(fast)",
+                "⚖️ Balanced",
+            ].index(goal),
+            help="Performance = widest model search | Speed = smaller fast pool | Balanced = strong middle ground",
         )
     with col2:
         mode = st.radio(
             "Select Execution Mode (V3)",
-            ["⚡ Fast (Exploration only)", "⚖️ Balanced (Standard optimization)", "🧠 Full (Deep Bayesian Search)"],
+            [
+                "⚡ Fast (Exploration only)",
+                "⚖️ Balanced (Standard optimization)",
+                "🧠 Full (Deep Bayesian Search)",
+            ],
             key="mode_choice",
-            index=["⚡ Fast (Exploration only)", "⚖️ Balanced (Standard optimization)", "🧠 Full (Deep Bayesian Search)"].index(mode),
-            help="Fast = sweep only | Balanced = moderate optimization | Full = deeper Bayesian optimization"
+            index=[
+                "⚡ Fast (Exploration only)",
+                "⚖️ Balanced (Standard optimization)",
+                "🧠 Full (Deep Bayesian Search)",
+            ].index(mode),
+            help="Fast = sweep only | Balanced = moderate optimization | Full = deeper Bayesian optimization",
         )
 
     goal_descriptions = {
@@ -659,7 +851,9 @@ if st.session_state.get('profile'):
             # ── 5. Evaluation Metric ──────────────────────────────────────
             st.markdown("#### 📊 Evaluation Metric")
             detect = st.session_state.get("auto_detect") or {}
-            task_type = detect.get("task_type") or (profile or {}).get("task_type", "classification")
+            task_type = detect.get("task_type") or (profile or {}).get(
+                "task_type", "classification"
+            )
             if task_type == "regression":
                 if st.session_state.get("eval_metric_choice") not in {"RMSE", "R²"}:
                     st.session_state["eval_metric_choice"] = "RMSE"
@@ -667,16 +861,19 @@ if st.session_state.get('profile'):
                     "Metric (Regression)",
                     ["RMSE", "R²"],
                     key="eval_metric_choice",
-                    help="Default: RMSE. RMSE = Root Mean Squared Error | R² = Coefficient of Determination"
+                    help="Default: RMSE. RMSE = Root Mean Squared Error | R² = Coefficient of Determination",
                 )
             else:
-                if st.session_state.get("eval_metric_choice") not in {"Accuracy", "F1-score"}:
+                if st.session_state.get("eval_metric_choice") not in {
+                    "Accuracy",
+                    "F1-score",
+                }:
                     st.session_state["eval_metric_choice"] = "Accuracy"
                 eval_metric = st.selectbox(
                     "Metric (Classification)",
                     ["Accuracy", "F1-score"],
                     key="eval_metric_choice",
-                    help="Default: Accuracy. F1 = good for imbalanced data."
+                    help="Default: Accuracy. F1 = good for imbalanced data.",
                 )
 
             st.markdown("---")
@@ -686,7 +883,7 @@ if st.session_state.get('profile'):
             handle_imbalance = st.toggle(
                 "Handle Class Imbalance",
                 key="handle_imbalance_choice",
-                help="Applies SMOTE / class-weight balancing for skewed target distributions"
+                help="Applies SMOTE / class-weight balancing for skewed target distributions",
             )
 
         with adv_col2:
@@ -697,7 +894,7 @@ if st.session_state.get('profile'):
                 "Select Features (leave blank = All)",
                 options=all_features,
                 default=[],
-                help="Advanced: restrict training to specific columns. Leave empty to use all features."
+                help="Advanced: restrict training to specific columns. Leave empty to use all features.",
             )
             if not selected_features:
                 st.caption("✔ All features selected")
@@ -709,7 +906,7 @@ if st.session_state.get('profile'):
             auto_clean = st.checkbox(
                 "Fix Issues Automatically",
                 key="auto_clean_choice",
-                help="Fills missing values, removes duplicates, and encodes categories automatically"
+                help="Fills missing values, removes duplicates, and encodes categories automatically",
             )
 
             st.markdown("---")
@@ -721,7 +918,7 @@ if st.session_state.get('profile'):
                 min_value=0,
                 max_value=10,
                 key="cv_folds_choice",
-                help="Set to 0-1 to disable CV. 5-10 is standard but takes more time."
+                help="Set to 0-1 to disable CV. 5-10 is standard but takes more time.",
             )
 
         st.markdown("---")
@@ -730,14 +927,22 @@ if st.session_state.get('profile'):
         st.markdown("#### 📦 Output Options")
         out_col1, out_col2, out_col3 = st.columns(3)
         with out_col1:
-            export_model = st.checkbox("✔ Model", value=True, help="Export trained model file (.pkl / .joblib)")
+            export_model = st.checkbox(
+                "✔ Model", value=True, help="Export trained model file (.pkl / .joblib)"
+            )
         with out_col2:
-            export_code = st.checkbox("✔ Code", value=True, help="Export reproducible Python training script")
+            export_code = st.checkbox(
+                "✔ Code", value=True, help="Export reproducible Python training script"
+            )
         with out_col3:
-            export_report = st.checkbox("✔ Report", value=True, help="Export full HTML/PDF analysis report")
+            export_report = st.checkbox(
+                "✔ Report", value=True, help="Export full HTML/PDF analysis report"
+            )
 
         if st.button("Reset Advanced Options To Recommended Defaults", width="stretch"):
-            st.session_state["eval_metric_choice"] = "RMSE" if task_type == "regression" else "Accuracy"
+            st.session_state["eval_metric_choice"] = (
+                "RMSE" if task_type == "regression" else "Accuracy"
+            )
             st.session_state["handle_imbalance_choice"] = False
             st.session_state["auto_clean_choice"] = True
             st.session_state["cv_folds_choice"] = 0
@@ -746,12 +951,12 @@ if st.session_state.get('profile'):
     goal_map = {
         "🎯 Performance(best results)": "Performance",
         "⚡ Speed(fast)": "Speed",
-        "⚖️ Balanced": "Balanced"
+        "⚖️ Balanced": "Balanced",
     }
     mode_map = {
         "⚡ Fast (Exploration only)": "Fast",
         "⚖️ Balanced (Standard optimization)": "Balanced",
-        "🧠 Full (Deep Bayesian Search)": "Full"
+        "🧠 Full (Deep Bayesian Search)": "Full",
     }
 
     forecast_payload = {}
@@ -779,7 +984,9 @@ if st.session_state.get('profile'):
     if forecast_payload and not forecast_payload.get("error"):
         st.markdown("### ⏱ Training Forecast")
         fc1, fc2, fc3, fc4 = st.columns(4)
-        fc1.metric("Estimated Runtime", forecast_payload.get("estimated_duration_label", "—"))
+        fc1.metric(
+            "Estimated Runtime", forecast_payload.get("estimated_duration_label", "—")
+        )
         fc2.metric("Compute", forecast_payload.get("compute_intensity", "—"))
         fc3.metric("Models", forecast_payload.get("estimated_model_count", "—"))
         fc4.metric("Sweep Rows", forecast_payload.get("estimated_sweep_rows", "—"))
@@ -823,12 +1030,14 @@ if st.session_state.get('profile'):
                 },
                 timeout=10,
             )
-            workspace_data = workspace_resp.json() if workspace_resp.status_code == 200 else {}
+            workspace_data = (
+                workspace_resp.json() if workspace_resp.status_code == 200 else {}
+            )
             workspace_id = workspace_data.get("id", "")
         except Exception:
             workspace_id = ""
         payload = {
-            "dataset_id": st.session_state['dataset_id'],
+            "dataset_id": st.session_state["dataset_id"],
             "target_column": target_col,
             "goal": goal_map.get(goal, "Performance"),
             "mode": mode_map.get(mode, "Fast"),
@@ -852,7 +1061,7 @@ if st.session_state.get('profile'):
                 if "error" in data:
                     st.error(data["error"])
                 else:
-                    st.session_state['job_id'] = data['job_id']
+                    st.session_state["job_id"] = data["job_id"]
                     sync_workspace_query_params(
                         workspace=workspace_name,
                         preset=preset_name,
@@ -864,11 +1073,13 @@ if st.session_state.get('profile'):
                         cv_folds=cv_folds,
                     )
                     st.success("🚀 Training started!")
-                    st.info("👉 Navigate to **Live Training** in the sidebar to watch progress.")
+                    st.info(
+                        "👉 Navigate to **Live Training** in the sidebar to watch progress."
+                    )
                     st.switch_page("pages/3_Training_Lab.py")
             else:
                 st.error("Failed to start training.")
         except requests.exceptions.ConnectionError:
             st.error("❌ Cannot reach backend.")
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
