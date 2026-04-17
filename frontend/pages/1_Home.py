@@ -658,8 +658,8 @@ if st.session_state.get('profile'):
         with adv_col1:
             # ── 5. Evaluation Metric ──────────────────────────────────────
             st.markdown("#### 📊 Evaluation Metric")
-            detect = st.session_state.get("auto_detect", {})
-            task_type = detect.get("task_type") or profile.get("task_type", "classification")
+            detect = st.session_state.get("auto_detect") or {}
+            task_type = detect.get("task_type") or (profile or {}).get("task_type", "classification")
             if task_type == "regression":
                 if st.session_state.get("eval_metric_choice") not in {"RMSE", "R²"}:
                     st.session_state["eval_metric_choice"] = "RMSE"
