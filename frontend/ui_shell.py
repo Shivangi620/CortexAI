@@ -4,7 +4,7 @@ from typing import Iterable, Optional
 import requests
 import streamlit as st
 
-API_URL = "http://localhost:8000/api"
+API_URL = os.getenv("AUTOML_API_URL", "http://127.0.0.1:8000/api").rstrip("/")
 
 SESSION_DEFAULTS = {
     "dataset_id": None,

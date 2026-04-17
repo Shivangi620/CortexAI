@@ -2,14 +2,13 @@ import streamlit as st
 import requests
 import pandas as pd
 from ui_shell import (
+    API_URL,
     ensure_session_state,
     load_css,
     render_page_shell,
     render_section_intro,
     render_workspace_banner,
 )
-
-API_URL = "http://localhost:8000/api"
 
 
 def api_json(path: str, timeout: int = 10):

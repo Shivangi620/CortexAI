@@ -7,14 +7,13 @@ import streamlit as st
 
 from ui_utils import format_metric_value
 from ui_shell import (
+    API_URL,
     ensure_session_state,
     load_css,
     render_page_shell,
     render_section_intro,
     render_workspace_banner,
 )
-
-API_URL = "http://localhost:8000/api"
 
 st.set_page_config(page_title="Results Console - AutoML Studio", page_icon="📊", layout="wide")
 

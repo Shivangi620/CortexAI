@@ -2,14 +2,13 @@ import streamlit as st
 import requests
 
 from ui_shell import (
+    API_URL,
     ensure_session_state,
     load_css,
     render_page_shell,
     render_section_intro,
     render_workspace_banner,
 )
-
-API_URL = "http://localhost:8000/api"
 
 st.set_page_config(page_title="Home - AutoML Studio", page_icon="🏠", layout="wide")
 
@@ -143,7 +142,7 @@ if import_mode == "Upload File":
                     else:
                         st.error(f"Backend error: {res.status_code}")
                 except requests.exceptions.ConnectionError:
-                    st.error("❌ Cannot reach backend. Is FastAPI running on port 8000?")
+                    st.error("❌ Cannot reach backend. The internal API service may still be starting.")
 elif import_mode == "Connectors":
     connector_left, connector_right = st.columns([1.1, 0.9])
     with connector_left:

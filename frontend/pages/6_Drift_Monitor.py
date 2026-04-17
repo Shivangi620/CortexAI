@@ -2,14 +2,13 @@ import pandas as pd
 import requests
 import streamlit as st
 from ui_shell import (
+    API_URL,
     ensure_session_state,
     load_css,
     render_page_shell,
     render_section_intro,
     render_workspace_banner,
 )
-
-API_URL = "http://localhost:8000/api"
 
 st.set_page_config(page_title="Drift Monitor", page_icon="📉", layout="wide")
 

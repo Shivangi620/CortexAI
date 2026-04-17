@@ -4,10 +4,17 @@ emoji: ✨
 colorFrom: blue
 colorTo: indigo
 sdk: docker
+app_port: 7860
 pinned: false
 ---
 
 # 🎨 AutoML Studio
+
+This repository is configured to run on Hugging Face Spaces as a single Docker Space that serves:
+
+- Streamlit frontend through Nginx on public port `7860`
+- FastAPI backend internally on `127.0.0.1:8000`
+- Celery worker plus Redis inside the same container for background training jobs
 
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)

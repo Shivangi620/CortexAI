@@ -1,44 +1,56 @@
 #!/bin/bash
+set -euo pipefail
 
-# 🛡️ ROBUST START SCRIPT FOR HUGGING FACE SPACES
-# This script launches Redis, FastAPI, Celery, and Streamlit in one container.
+# This script launches Redis, FastAPI, Celery, Streamlit, and Nginx in one HF Space container.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-export PYTHONPATH="$SCRIPT_DIR/backend:$PYTHONPATH"
-export HOME="/home/user"
+export HOME="${HOME:-/home/user}"
+export PYTHONPATH="$SCRIPT_DIR/backend:${PYTHONPATH:-}"
+export REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}"
+export CELERY_BROKER_URL="${CELERY_BROKER_URL:-$REDIS_URL}"
+export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-$REDIS_URL}"
+export AUTOML_API_URL="${AUTOML_API_URL:-http://127.0.0.1:8000/api}"
 
-# 1. Start Redis (Internal Broker)
+mkdir -p /tmp/nginx_client_body /tmp/nginx_proxy /tmp/nginx_fastcgi /tmp/nginx_uwsgi /tmp/nginx_scgi
+
+cleanup() {
+    local exit_code=$?
+    echo "Shutting down services..."
+    kill "${NGINX_PID:-}" "${FRONTEND_PID:-}" "${WORKER_PID:-}" "${BACKEND_PID:-}" "${REDIS_PID:-}" 2>/dev/null || true
+    wait "${NGINX_PID:-}" "${FRONTEND_PID:-}" "${WORKER_PID:-}" "${BACKEND_PID:-}" "${REDIS_PID:-}" 2>/dev/null || true
+    exit "$exit_code"
+}
+
+trap cleanup EXIT INT TERM
+
 echo "Starting Redis..."
 redis-server --port 6379 --dir /tmp --dbfilename dump.rdb --daemonize no &
 REDIS_PID=$!
 
-# 2. Start FastAPI Backend (Internal API)
-echo "Starting FastAPI Backend on port 8000..."
+echo "Starting FastAPI backend on port 8000..."
 cd "$SCRIPT_DIR/backend"
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --timeout-keep-alive 600 &
 BACKEND_PID=$!
 
-# 3. Start Celery Worker (Task Processor)
-echo "Starting Celery Worker..."
-cd "$SCRIPT_DIR/backend"
+echo "Starting Celery worker..."
 python -m celery -A core.worker.celery_app worker --loglevel=info --concurrency=1 &
 WORKER_PID=$!
 
-# 4. Start Streamlit Frontend (Internal UI)
-echo "Starting Streamlit Frontend on port 8501..."
+echo "Starting Streamlit frontend on port 8501..."
 cd "$SCRIPT_DIR/frontend"
-python -m streamlit run app.py --server.port 8501 --server.headless true --server.address 127.0.0.1 &
+python -m streamlit run app.py \
+    --server.port 8501 \
+    --server.address 127.0.0.1 \
+    --server.headless true \
+    --browser.gatherUsageStats false &
 FRONTEND_PID=$!
 
-# 5. Start Nginx (Public Gateway)
 echo "Starting Nginx on port ${PORT:-7860}..."
-# We use -c to point to our custom config
+cd "$SCRIPT_DIR"
 nginx -c "$SCRIPT_DIR/nginx.conf" &
 NGINX_PID=$!
 
-echo "🚀 All services launched!"
-
-# Keep the script alive.
-wait -n $NGINX_PID $FRONTEND_PID $BACKEND_PID
+echo "All services launched."
+wait -n "$NGINX_PID" "$FRONTEND_PID" "$WORKER_PID" "$BACKEND_PID" "$REDIS_PID"
