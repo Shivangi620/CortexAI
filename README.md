@@ -42,20 +42,19 @@ AutoML Studio is a high-performance, intelligent end-to-end automated machine le
 ```text
 AutoML Studio
 ├── frontend/
-│   └── web/
-│       ├── index.html         # Standalone upload and training control surface
-│       ├── results.html       # Redesigned Results Console
-│       ├── styles.css         # Shared futuristic visual system
-│       └── app.js             # Frontend logic for upload, train, inspect, predict, export
+│   ├── app.py                 # Streamlit entry point
+│   ├── pages/                 # Streamlit workflows
+│   ├── style.css              # Shared visual system
+│   └── ui_shell.py            # Shared UI helpers
 ├── backend/
-│   ├── main.py               # FastAPI router handling multi-part ingestion & background tasks
+│   ├── main.py               # FastAPI entry point
 │   └── core/
 │       ├── data_profiler.py  # Dataset heuristic extraction logic
-│       ├── model_trainer.py  # The Scikit-Learn/XGBoost dynamic training arena
-│       ├── insights.py       # Narrative generation and AI Coaching synthesis
-│       └── export.py         # ZIP creation containing model.pkl + dynamically generated API code
+│       ├── insights.py       # Narrative generation and AI coaching synthesis
+│       └── export.py         # ZIP creation for trained model bundles
 ├── requirements.txt          # Shared dependencies
-├── run.sh                    # Quick start execution script
+├── start.sh                  # Docker / HF launcher
+├── run.sh                    # Local development launcher
 └── README.md
 ```
 
@@ -80,7 +79,7 @@ pip install -r requirements.txt
 ```
 
 ### 3. Quick Start (Recommended)
-You can launch the FastAPI backend, worker stack, and built-in web frontend using the provided shell script:
+You can launch the FastAPI backend, worker stack, and Streamlit frontend using the provided shell script:
 ```bash
 bash run.sh
 ```
@@ -92,13 +91,13 @@ If you prefer to run it manually:
 cd backend
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
-2. **Open the frontend:** `http://localhost:8000`
+2. **Open the frontend:** `http://localhost:8501`
 
 ---
 
 ## 📖 How to Use
 
-Once the application is live on `http://localhost:8000`, follow these steps:
+Once the application is live on `http://localhost:8501`, follow these steps:
 
 1. **Upload Dataset**: Navigate to the **Home** tab and drag-and-drop your dataset (CSV, JSON, Excel, or Parquet).
 2. **Review DNA**: Click on the **DNA** tab to review the automatic imputation plan and exploratory data analysis.
@@ -109,50 +108,12 @@ Once the application is live on `http://localhost:8000`, follow these steps:
 
 ## 🌐 Deployment Options
 
-### Quick Deploy (Recommended for Beginners)
-
-#### 1. Railway (Easiest - 5 minutes)
-```bash
-# Install Railway CLI
-npm install -g @railway/cli
-
-# Login and deploy
-railway login
-railway init automl-studio
-railway up
-```
-
-#### 2. Render (Free tier available)
-```bash
-# Run setup script
-bash setup-render.sh
-
-# Then deploy via Render dashboard
-# Go to render.com and connect your GitHub repo
-```
-
-#### 3. Docker (Most Flexible)
+#### Docker
 ```bash
 # Build and run with Docker Compose
 docker-compose up -d
 
-# Access at http://localhost:8000
-```
-
-### Advanced Deployment
-
-#### AWS/GCP/Azure
-- Use Elastic Beanstalk, App Engine, or App Service
-- Add RDS/Cloud SQL for database persistence
-- Use Cloud Storage for model artifacts
-
-#### Heroku
-```bash
-# Create Heroku app
-heroku create your-automl-studio
-
-# Deploy
-git push heroku main
+# Access the app through the container's configured public port
 ```
 
 ### Production Considerations
