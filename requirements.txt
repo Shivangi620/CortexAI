@@ -4,20 +4,20 @@ uvicorn[standard]==0.31.0
 pydantic>=2.13.3
 
 # ── Data Processing ─────────────────────────────────────
-pandas>=3.0.2
-numpy>=2.0.0
-scipy>=1.15.0
+pandas>=2.2.0
+numpy>=1.26.0,<3.0.0
+scipy>=1.13.0
 
 # ── Machine Learning ────────────────────────────────────
-scikit-learn==1.8.0
-xgboost==3.2.0
+scikit-learn>=1.5.0
+xgboost>=2.0.0
 optuna>=3.6.0
 
 # ── UI / Frontend
 streamlit>=1.30.0,<2
 
 # ── Explainability ──────────────────────────────────────
-shap==0.46.0
+shap>=0.45.0
 
 # ── File Handling / Utilities ───────────────────────────
 python-multipart==0.0.9

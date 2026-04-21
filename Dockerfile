@@ -24,7 +24,7 @@ WORKDIR $HOME/app
 
 # Copy and install dependencies first (caches this step)
 COPY --chown=user requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir --user --prefer-binary -r requirements.txt
 
 # Copy the rest of the application
 COPY --chown=user . .
