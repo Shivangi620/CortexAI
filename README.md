@@ -12,7 +12,7 @@ pinned: false
 
 This repository is configured to run on Hugging Face Spaces as a single Docker Space that serves:
 
-- Streamlit frontend through Nginx on public port `7860`
+- A React frontend bundle through FastAPI and Nginx on public port `7860`
 - FastAPI backend internally on `127.0.0.1:8000`
 - Celery worker plus Redis inside the same container for background training jobs
 
@@ -20,7 +20,7 @@ This repository is configured to run on Hugging Face Spaces as a single Docker S
 ![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-AutoML Studio is a high-performance, intelligent end-to-end automated machine learning platform. It empowers anyone to upload tabular datasets, leverage "Dataset DNA" heuristics to automatically preprocess data, logically isolate the most appropriate algorithms, and train competitive ML models through a multi-page **Streamlit** frontend paired with a **FastAPI** backend.
+AutoML Studio is a high-performance, intelligent end-to-end automated machine learning platform. It empowers anyone to upload tabular datasets, leverage "Dataset DNA" heuristics to automatically preprocess data, logically isolate the most appropriate algorithms, and train competitive ML models through a web frontend paired with a **FastAPI** backend.
 
 ![AutoML Studio Dashboard](./assets/dashboard_preview.png)
 *(Placeholder: Add a screenshot or GIF of the dashboard here)*
@@ -42,10 +42,9 @@ AutoML Studio is a high-performance, intelligent end-to-end automated machine le
 ```text
 AutoML Studio
 ├── frontend/
-│   ├── app.py                 # Streamlit entry point
-│   ├── pages/                 # Streamlit workflows
-│   ├── style.css              # Shared visual system
-│   └── ui_shell.py            # Shared UI helpers
+│   ├── react-src/             # React source for the served SPA
+│   ├── static/                # Generated frontend bundle
+│   └── app.py                 # Legacy Streamlit entry point
 ├── backend/
 │   ├── main.py               # FastAPI entry point
 │   └── core/
@@ -79,7 +78,7 @@ pip install -r requirements.txt
 ```
 
 ### 3. Quick Start (Recommended)
-You can launch the FastAPI backend, worker stack, and Streamlit frontend using the provided shell script:
+You can launch the FastAPI backend, worker stack, and React frontend build using the provided shell script:
 ```bash
 bash run.sh
 ```
@@ -91,13 +90,13 @@ If you prefer to run it manually:
 cd backend
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
-2. **Open the frontend:** `http://localhost:8501`
+2. **Open the app:** `http://localhost:8000`
 
 ---
 
 ## 📖 How to Use
 
-Once the application is live on `http://localhost:8501`, follow these steps:
+Once the application is live on `http://localhost:8000`, follow these steps:
 
 1. **Upload Dataset**: Navigate to the **Home** tab and drag-and-drop your dataset (CSV, JSON, Excel, or Parquet).
 2. **Review DNA**: Click on the **DNA** tab to review the automatic imputation plan and exploratory data analysis.
@@ -126,7 +125,8 @@ docker-compose up -d
 ### Configuration Notes
 - `PORT` controls the public Nginx listener. Default is `7860`.
 - `AUTOML_ALLOWED_ORIGINS` accepts a comma-separated CORS allowlist for the FastAPI backend.
-- `STREAMLIT_ENABLE_CORS` and `STREAMLIT_ENABLE_XSRF_PROTECTION` let you tighten frontend security for non-HF deployments.
+- `DATABASE_URL` controls the SQLAlchemy database connection string.
+- `REDIS_URL`, `CELERY_BROKER_URL`, and `CELERY_RESULT_BACKEND` control background-job transport.
 
 ---
 
@@ -140,3 +140,4 @@ This project is licensed under the MIT License.
 # auto_ml
 # auto_ml
 # auto_ml
+# auto-ml
