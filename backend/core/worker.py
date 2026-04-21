@@ -3,13 +3,12 @@ import json
 import csv
 from celery import Celery
 
-from infra.database import get_db, JobModel, DatasetModel, NotificationModel, WorkspaceModel, ExperimentRun
+from infra.database import get_db, db_session, JobModel, DatasetModel, NotificationModel, WorkspaceModel, ExperimentRun
 from infra.logger import get_logger
 from infra.result_contract import normalize_results
 
 log = get_logger(__name__)
 from core.insights import generate_insights, generate_story
-from core.meta_learning import save_meta_record
 from core.pipeline_engine import PipelineEngine, PipelineContext
 from services.training.components import (
     DataValidationComponent,
@@ -39,6 +38,8 @@ def run_training_job(
     handle_imbalance=False,
     auto_clean=True,
     cv_folds=0,
+    pca_mode="auto",
+    pca_components=0,
 ):
     """
     Celery task: runs training in background using the Modular Component Pipeline Engine.
@@ -47,7 +48,7 @@ def run_training_job(
     profile_data = {}
     health_metadata = {}
     try:
-        with get_db() as db:
+        with db_session() as db:
             ds = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
             if ds and ds.profile_json:
                 try:
@@ -65,7 +66,9 @@ def run_training_job(
         "selected_features": selected_features,
         "handle_imbalance": handle_imbalance,
         "auto_clean": auto_clean,
-        "cv_folds": cv_folds or 5
+        "cv_folds": cv_folds or 5,
+        "pca_mode": pca_mode,
+        "pca_components": pca_components,
     }
 
     ctx = PipelineContext(
@@ -102,12 +105,14 @@ def run_training_job(
             story = None
 
         try:
+            from core.meta_learning import save_meta_record
+
             save_meta_record(profile_data or {}, results or {})
         except Exception as e:
             log.warning(f"Meta-learning save skipped: {e}")
 
         try:
-            with get_db() as db:
+            with db_session() as db:
                 job = db.query(JobModel).filter(JobModel.id == job_id).first()
                 if job:
                     job.status = "completed"
@@ -142,9 +147,13 @@ def run_training_job(
                     if workspace_id or workspace_name:
                         workspace = None
                         if workspace_id:
-                            workspace = db.query(WorkspaceModel).filter(WorkspaceModel.id == workspace_id).first()
+                            workspace = db.query(WorkspaceModel).filter(
+                                WorkspaceModel.id == workspace_id,
+                            ).first()
                         if not workspace and workspace_name:
-                            workspace = db.query(WorkspaceModel).filter(WorkspaceModel.name == workspace_name).first()
+                            workspace = db.query(WorkspaceModel).filter(
+                                WorkspaceModel.name == workspace_name,
+                            ).first()
                         if workspace:
                             workspace.dataset_id = dataset_id
                             workspace.last_job_id = job_id
@@ -157,7 +166,9 @@ def run_training_job(
                         .first()
                     )
                     if workspace_id and latest_run:
-                        workspace = db.query(WorkspaceModel).filter(WorkspaceModel.id == workspace_id).first()
+                        workspace = db.query(WorkspaceModel).filter(
+                            WorkspaceModel.id == workspace_id,
+                        ).first()
                         if workspace:
                             workspace.last_run_id = latest_run.id
 

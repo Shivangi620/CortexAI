@@ -7,12 +7,12 @@ import numpy as np
 import pandas as pd
 
 from core.file_loader import load_dataframe
-from infra.database import DatasetModel, ExperimentRun, JobModel, WorkspaceModel, NotificationModel, get_db
+from infra.database import DatasetModel, ExperimentRun, JobModel, WorkspaceModel, NotificationModel, get_db, db_session
 from services.data_sanitizer import build_dataset_version_report
 
 
 def list_datasets(limit: int = 100, include_archived: bool = False) -> List[Dict[str, Any]]:
-    with get_db() as db:
+    with db_session() as db:
         rows = (
             db.query(DatasetModel)
             .order_by(DatasetModel.created_at.desc())
@@ -106,8 +106,9 @@ def _job_snapshot(row: JobModel | None) -> Dict[str, Any] | None:
 def get_workspace_snapshot(
     dataset_id: str | None = None,
     job_id: str | None = None,
+    
 ) -> Dict[str, Any]:
-    with get_db() as db:
+    with db_session() as db:
         dataset_row = None
         job_row = None
         workspace_row = None
@@ -118,9 +119,7 @@ def get_workspace_snapshot(
                 dataset_id = job_row.dataset_id
 
         if dataset_id:
-            dataset_row = (
-                db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
-            )
+            dataset_row = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         else:
             dataset_row = (
                 db.query(DatasetModel)
@@ -153,21 +152,21 @@ def get_workspace_snapshot(
             elif workspace_name:
                 workspace_row = db.query(WorkspaceModel).filter(WorkspaceModel.name == workspace_name).first()
 
-    return {
-        "workspace": {
-            "id": workspace_row.id,
-            "name": workspace_row.name,
-            "dataset_id": workspace_row.dataset_id,
-            "last_job_id": workspace_row.last_job_id,
-            "last_run_id": workspace_row.last_run_id,
-        } if workspace_row else None,
-        "dataset": _dataset_snapshot(dataset_row),
-        "job": _job_snapshot(job_row),
-    }
+        return {
+            "workspace": {
+                "id": workspace_row.id,
+                "name": workspace_row.name,
+                "dataset_id": workspace_row.dataset_id,
+                "last_job_id": workspace_row.last_job_id,
+                "last_run_id": workspace_row.last_run_id,
+            } if workspace_row else None,
+            "dataset": _dataset_snapshot(dataset_row),
+            "job": _job_snapshot(job_row),
+        }
 
 
 def compare_dataset_versions(dataset_id: str, target: str | None = None) -> Dict[str, Any]:
-    with get_db() as db:
+    with db_session() as db:
         current = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not current:
             return {"error": "Dataset not found"}
@@ -203,7 +202,7 @@ def compare_dataset_versions(dataset_id: str, target: str | None = None) -> Dict
 
 
 def list_notifications(limit: int = 50) -> Dict[str, Any]:
-    with get_db() as db:
+    with db_session() as db:
         rows = db.query(NotificationModel).order_by(NotificationModel.created_at.desc()).limit(limit).all()
     return {
         "notifications": [
@@ -290,13 +289,12 @@ def merge_preview(
 
 
 def build_lineage_graph(dataset_id: str) -> Dict[str, Any]:
-    with get_db() as db:
+    with db_session() as db:
         current = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not current:
             return {"error": "Dataset not found"}
 
         nodes: List[Dict[str, Any]] = []
-        edges: List[Dict[str, Any]] = []
         seen = set()
         cursor = current
 
@@ -307,25 +305,31 @@ def build_lineage_graph(dataset_id: str) -> Dict[str, Any]:
             except Exception:
                 profile = {}
 
+            # Add Training Jobs for this dataset
+            jobs = db.query(JobModel).filter(JobModel.dataset_id == cursor.id).all()
+            for job in jobs:
+                nodes.append({
+                    "id": f"job-{job.id}",
+                    "type": "Training Mission",
+                    "label": f"AutoML: {job.id[:8]}",
+                    "detail": f"Status: {job.status} • Result: {job.error or 'Success'}",
+                    "created_at": job.created_at.isoformat() if job.created_at else None,
+                    "is_job": True
+                })
+
+            # Add Dataset node
             nodes.append(
                 {
                     "id": cursor.id,
+                    "type": "Data Ingestion",
                     "label": f"{(cursor.source_type or 'dataset').replace('_', ' ').title()}",
-                    "source_type": cursor.source_type or "unknown",
-                    "rows": profile.get("rows"),
-                    "cols": profile.get("cols"),
-                    "missing_pct": profile.get("missing_pct"),
+                    "detail": f"{profile.get('rows', '—')} rows • {profile.get('cols', '—')} columns",
                     "created_at": cursor.created_at.isoformat() if cursor.created_at else None,
+                    "is_dataset": True
                 }
             )
+
             if cursor.parent_dataset_id:
-                edges.append(
-                    {
-                        "source": cursor.parent_dataset_id,
-                        "target": cursor.id,
-                        "label": cursor.source_type or "derived",
-                    }
-                )
                 cursor = (
                     db.query(DatasetModel)
                     .filter(DatasetModel.id == cursor.parent_dataset_id)
@@ -334,13 +338,14 @@ def build_lineage_graph(dataset_id: str) -> Dict[str, Any]:
             else:
                 cursor = None
 
-    nodes.reverse()
-    edges.reverse()
-    return {"dataset_id": dataset_id, "nodes": nodes, "edges": edges}
+    # Sort by creation date to show lineage flow
+    nodes.sort(key=lambda x: x.get("created_at") or "", reverse=False)
+    
+    return {"dataset_id": dataset_id, "nodes": nodes}
 
 
 def synthetic_data_judge(dataset_id: str) -> Dict[str, Any]:
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
             return {"error": "Dataset not found"}
@@ -412,9 +417,13 @@ def _json_load(value: Any, default: Any) -> Any:
 
 
 def experiment_diff(run_a_id: str, run_b_id: str) -> Dict[str, Any]:
-    with get_db() as db:
+    with db_session() as db:
         run_a = db.query(ExperimentRun).filter(ExperimentRun.id == run_a_id).first()
         run_b = db.query(ExperimentRun).filter(ExperimentRun.id == run_b_id).first()
+        if not run_a and run_a_id:
+            run_a = db.query(ExperimentRun).filter(ExperimentRun.job_id == run_a_id).first()
+        if not run_b and run_b_id:
+            run_b = db.query(ExperimentRun).filter(ExperimentRun.job_id == run_b_id).first()
         if not run_a or not run_b:
             return {"error": "One or both experiment runs were not found"}
 
@@ -506,7 +515,7 @@ def build_trust_heatmap(dataset_id: str, results: Dict[str, Any]) -> Dict[str, A
     feature_names = results.get("feature_names") or []
     shap_summary = results.get("shap_summary") or {}
 
-    with get_db() as db:
+    with db_session() as db:
         runs = (
             db.query(ExperimentRun)
             .filter(ExperimentRun.dataset_id == dataset_id)

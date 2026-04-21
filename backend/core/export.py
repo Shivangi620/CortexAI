@@ -58,6 +58,12 @@ def _model_import_and_init(best_model_name: str, is_clf: bool):
             f"from sklearn.ensemble import {model_class}",
             f"{model_class}(n_estimators=200, random_state=42)",
         )
+    if "Decision Tree" in best_model_name:
+        model_class = "DecisionTreeClassifier" if is_clf else "DecisionTreeRegressor"
+        return (
+            f"from sklearn.tree import {model_class}",
+            f"{model_class}(max_depth=8, random_state=42)",
+        )
     if "Logistic" in best_model_name:
         return (
             "from sklearn.linear_model import LogisticRegression",
@@ -623,9 +629,9 @@ def create_export_bundle(job_id: str, results: dict) -> str:
     dataset_path = ""
     job_snapshot = {}
     try:
-        from infra.database import get_db, JobModel, DatasetModel
+        from infra.database import get_db, db_session, JobModel, DatasetModel
 
-        with get_db() as db:
+        with db_session() as db:
             job = db.query(JobModel).filter(JobModel.id == job_id).first()
             if job:
                 try:

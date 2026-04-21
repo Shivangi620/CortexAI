@@ -6,6 +6,7 @@ from ui_shell import (
     API_URL,
     ensure_session_state,
     load_css,
+    render_focus_strip,
     render_page_shell,
     render_section_intro,
     render_workspace_banner,
@@ -51,6 +52,13 @@ render_section_intro(
     "Run Monitor",
     "The lab keeps the training log and score trajectory visible while the backend works.",
     "When the run completes, this page turns into a launchpad straight into the deeper results console.",
+)
+render_focus_strip(
+    [
+        ("Algorithm Watch", "Track which model family is winning: linear, tree-based, SVM, KNN, or PCA-assisted pipelines."),
+        ("Model Evaluation", "Cross-validation and train-test outcomes become legible while the run is active."),
+        ("Reward Loop", "The lab’s live feedback makes the optimization flow feel closer to reinforcement-style iteration."),
+    ]
 )
 
 # ── Live polling (replaces asyncio.run — Streamlit-safe) ──────────────────────

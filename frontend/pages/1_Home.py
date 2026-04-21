@@ -2,6 +2,8 @@ import streamlit as st
 import requests
 import pandas as pd
 import json
+import re
+from urllib.parse import urlparse
 
 from ui_shell import (
     API_URL,
@@ -9,6 +11,7 @@ from ui_shell import (
     ensure_session_state,
     get_query_param,
     load_css,
+    render_focus_strip,
     render_page_shell,
     render_safe_dataframe,
     render_section_intro,
@@ -39,6 +42,14 @@ st.session_state.setdefault(
 st.session_state.setdefault(
     "auto_clean_choice", (get_query_param("auto_clean") or "true").lower() == "true"
 )
+st.session_state.setdefault(
+    "pca_mode_choice", get_query_param("pca_mode") or "auto"
+)
+try:
+    default_pca_components = int(get_query_param("pca_components") or 0)
+except (TypeError, ValueError):
+    default_pca_components = 0
+st.session_state.setdefault("pca_components_choice", default_pca_components)
 st.session_state.setdefault(
     "workspace_name_choice", get_query_param("workspace") or "Default Workspace"
 )
@@ -89,7 +100,13 @@ render_section_intro(
     "Ingest data, confirm the prediction setup, and launch training.",
     "This page keeps the high-friction steps together: file upload, auto-detection, training preferences, advanced controls, and export options.",
 )
-
+render_focus_strip(
+    [
+        ("Preprocessing", "Normalization, standardization, imputation, and encoding start here."),
+        ("Evaluation Setup", "Choose train-test strategy, CV folds, and PCA before launch."),
+        ("Algorithms", "Configure the workspace that feeds linear models, trees, forests, SVM, KNN, and PCA-aware pipelines."),
+    ]
+)
 
 @st.cache_data(show_spinner=False, ttl=20)
 def get_training_forecast_cached(payload_json: str):
@@ -100,6 +117,122 @@ def get_training_forecast_cached(payload_json: str):
         timeout=20,
     )
     return forecast_res.json() if forecast_res.status_code == 200 else {}
+
+
+def validate_training_payload(profile, target_col, selected_features, workspace_name, dataset_id):
+    """
+    Comprehensive validation before training.
+    Returns (is_valid, error_message).
+    """
+    errors = []
+    
+    # Check dataset
+    if not dataset_id:
+        errors.append("❌ No dataset loaded. Upload or import a dataset first.")
+    
+    if not profile:
+        errors.append("❌ Dataset profile not found. Try refreshing the dataset.")
+        return False, "\n".join(errors)
+    
+    columns = profile.get("columns", [])
+    rows = profile.get("rows", 0)
+    
+    # Check target column
+    if not target_col:
+        errors.append("❌ Target column not selected.")
+    elif target_col not in columns:
+        errors.append(f"❌ Target column '{target_col}' not found in dataset.")
+    
+    # Check minimum rows
+    if rows < 10:
+        errors.append(f"⚠️ Warning: Only {rows} rows detected. Minimum recommended: 50 rows.")
+    elif rows < 50:
+        errors.append(f"⚠️ Dataset has {rows} rows. Results may be unreliable.")
+    
+    # Check features
+    if selected_features:
+        missing_features = [f for f in selected_features if f not in columns]
+        if missing_features:
+            errors.append(f"❌ Selected features not found: {', '.join(missing_features[:3])}")
+        
+        # Ensure target not in features
+        if target_col in selected_features:
+            errors.append(f"❌ Target column '{target_col}' cannot be in feature list.")
+    
+    # Check workspace name
+    if workspace_name.strip() and len(workspace_name) > 100:
+        errors.append("❌ Workspace name too long (max 100 characters).")
+    
+    # Check for all-null columns
+    null_cols = [c for c in columns if c != target_col and profile.get("null_percentage", {}).get(c, 0) > 99]
+    if null_cols:
+        errors.append(f"⚠️ Columns with >99% missing values will be dropped: {', '.join(null_cols[:3])}")
+    
+    # Check minimum features (at least 1 feature besides target)
+    available_features = [c for c in columns if c != target_col]
+    if not available_features:
+        errors.append("❌ No features available (only target column exists).")
+    
+    if errors:
+        return False, "\n".join(errors)
+    
+    return True, None
+
+
+def mask_connection_uri(uri: str) -> str:
+    """Safely mask credentials in connection URI for logging."""
+    try:
+        parsed = urlparse(uri)
+        if parsed.password:
+            masked = uri.replace(parsed.password, "***")
+            return masked
+        return uri
+    except:
+        return "[connection URI]"
+
+
+def validate_connector_uri(connector_type: str, uri: str) -> tuple:
+    """
+    Validate connector URI format.
+    Returns (is_valid, error_message).
+    """
+    if not uri.strip():
+        return False, "Connection URI cannot be empty."
+    
+    # Check for credentials in URI
+    if "password" in uri.lower() and "***" not in uri:
+        # Allow but warn
+        pass
+    
+    # Validate format by connector type
+    try:
+        parsed = urlparse(uri)
+        
+        if connector_type == "PostgreSQL":
+            if not uri.startswith(("postgresql://", "postgresql+psycopg://", "postgres://")):
+                return False, "PostgreSQL URI must start with postgresql:// or postgres://"
+            if not parsed.hostname:
+                return False, "Invalid PostgreSQL URI: missing hostname."
+        
+        elif connector_type == "MySQL":
+            if not uri.startswith(("mysql://", "mysql+pymysql://")):
+                return False, "MySQL URI must start with mysql:// or mysql+pymysql://"
+            if not parsed.hostname:
+                return False, "Invalid MySQL URI: missing hostname."
+        
+        elif connector_type == "Snowflake":
+            if not uri.startswith(("snowflake://", "snowflake+pysnowflake://")):
+                return False, "Snowflake URI must start with snowflake://"
+        
+        elif connector_type == "BigQuery":
+            if not uri.startswith(("bigquery://", "bigquery-connector://")):
+                return False, "BigQuery URI must be properly formatted."
+        
+        return True, None
+    
+    except Exception as e:
+        return False, f"Invalid URI format: {str(e)[:50]}"
+
 
 
 st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
@@ -117,7 +250,8 @@ try:
         timeout=15,
     ).json()
     dataset_catalog = datasets_payload.get("datasets", [])
-except Exception:
+except Exception as e:
+    st.warning(f"Could not load dataset catalog: {str(e)[:100]}")
     dataset_catalog = []
 
 if dataset_catalog:
@@ -171,10 +305,19 @@ if dataset_catalog:
         if st.button(
             "Delete Permanently", width="stretch", key="dataset_manager_delete"
         ) and selected_dataset.get("id"):
-            requests.delete(f"{API_URL}/dataset/{selected_dataset['id']}", timeout=20)
-            if st.session_state.get("dataset_id") == selected_dataset.get("id"):
-                clear_workspace_state()
-            st.rerun()
+            st.warning(
+                f"⚠️ This will permanently delete '{selected_dataset.get('display_name') or 'dataset'}'. This cannot be undone. Click again to confirm.",
+                icon="⚠️"
+            )
+            if st.button("Confirm Delete", key="dataset_manager_delete_confirm", type="primary"):
+                try:
+                    requests.delete(f"{API_URL}/dataset/{selected_dataset['id']}", timeout=20)
+                    if st.session_state.get("dataset_id") == selected_dataset.get("id"):
+                        clear_workspace_state()
+                    st.success("Dataset deleted successfully.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to delete dataset: {str(e)}")
     catalog_df = pd.DataFrame(dataset_catalog)
     render_safe_dataframe(
         catalog_df[
@@ -250,9 +393,11 @@ if import_mode == "Upload File":
     )
 
     if uploaded_file is not None:
+        import hashlib
         last_file = st.session_state.get("last_analyzed_file")
+        file_hash = hashlib.md5(uploaded_file.getvalue()).hexdigest()
         current_file_key = (
-            f"{uploaded_file.name}_{uploaded_file.size}_{upload_handling}"
+            f"{uploaded_file.name}_{uploaded_file.size}_{upload_handling}_{file_hash}"
         )
 
         if last_file != current_file_key:
@@ -272,7 +417,7 @@ if import_mode == "Upload File":
                         f"{API_URL}/upload",
                         files=files,
                         data={"pdf_mode": pdf_mode},
-                        timeout=600,
+                        timeout=120,
                     )
                     if res.status_code == 200:
                         data = res.json()
@@ -310,8 +455,8 @@ if import_mode == "Upload File":
                                 )
                                 if detect_res.status_code == 200:
                                     st.session_state["auto_detect"] = detect_res.json()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                st.warning(f"Auto-detection could not complete: {str(e)[:80]}")
                             sync_workspace_query_params()
                     else:
                         st.error(f"Backend error: {res.status_code}")
@@ -342,37 +487,48 @@ elif import_mode == "Connectors":
 
     if st.button("🔌 Import From Connector", width="stretch"):
         if not connector_uri.strip() or not connector_query.strip():
-            st.error("Add both a connection URI and a SQL query.")
+            st.error("✋ Add both a connection URI and a SQL query.")
         else:
-            with st.spinner("Importing from external source..."):
-                try:
-                    res = requests.post(
-                        f"{API_URL}/import-source",
-                        json={
-                            "source_type": connector_type.lower(),
-                            "connection_uri": connector_uri.strip(),
-                            "query": connector_query.strip(),
-                        },
-                        timeout=120,
-                    )
-                    data = res.json()
-                    if res.status_code == 200 and not data.get("error"):
-                        st.session_state["dataset_id"] = data["dataset_id"]
-                        st.session_state["profile"] = data["profile"]
-                        st.session_state["upload_preview_records"] = data.get(
-                            "preview_records", []
+            # Validate URI
+            is_valid, error_msg = validate_connector_uri(connector_type, connector_uri)
+            if not is_valid:
+                st.error(f"❌ {error_msg}")
+            else:
+                with st.spinner("Importing from external source..."):
+                    try:
+                        res = requests.post(
+                            f"{API_URL}/import-source",
+                            json={
+                                "source_type": connector_type.lower(),
+                                "connection_uri": connector_uri.strip(),
+                                "query": connector_query.strip(),
+                            },
+                            timeout=120,
                         )
-                        st.session_state["upload_ingest_summary"] = data.get(
-                            "ingest_summary", {}
-                        )
-                        sync_workspace_query_params()
-                        st.success(f"{connector_type} import completed.")
-                    else:
-                        st.error(
-                            data.get("error", f"Import failed: HTTP {res.status_code}")
-                        )
-                except Exception as e:
-                    st.error(f"Import failed: {e}")
+                        data = res.json()
+                        if res.status_code == 200 and not data.get("error"):
+                            st.session_state["dataset_id"] = data["dataset_id"]
+                            st.session_state["profile"] = data["profile"]
+                            st.session_state["upload_preview_records"] = data.get(
+                                "preview_records", []
+                            )
+                            st.session_state["upload_ingest_summary"] = data.get(
+                                "ingest_summary", {}
+                            )
+                            sync_workspace_query_params()
+                            st.success(f"✅ {connector_type} import completed.")
+                        else:
+                            error_detail = data.get("error", f"HTTP {res.status_code}")
+                            st.error(f"❌ Import failed: {error_detail}")
+                            st.info(f"💡 Tip: Check your credentials and verify the SQL query is valid.")
+                    except requests.exceptions.Timeout:
+                        st.error(f"❌ Connection timeout. The database may be unreachable or the query is too slow.")
+                        st.info("💡 Try with LIMIT clause or check network connectivity.")
+                    except requests.exceptions.ConnectionError:
+                        st.error("❌ Cannot reach database. Verify connection URI and firewall settings.")
+                    except Exception as e:
+                        st.error(f"❌ Import failed: {str(e)[:100]}")
+                        st.caption(f"Error ID: {hash(str(e)) % 10000}")
 else:
     st.markdown("### Dataset Merge Studio", unsafe_allow_html=True)
     st.caption(
@@ -570,17 +726,6 @@ else:
                         st.error(merge_data.get("error", "Merge failed."))
                 except Exception as e:
                     st.error(f"Merge failed: {e}")
-st.markdown(
-    """
-        <div class="upload-shell__footer">
-            <div class="footer-pill">Auto profiling</div>
-            <div class="footer-pill">Problem inference</div>
-            <div class="footer-pill">Artifact restoration</div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 if st.session_state.get("profile"):
     ingest_summary = st.session_state.get("upload_ingest_summary") or {}
@@ -730,10 +875,23 @@ if st.session_state.get("profile"):
         suggested_target = columns[-1] if columns else None
 
     default_idx = columns.index(suggested_target) if suggested_target in columns else 0
-    st.info(f"💡 Auto-detected target column: **{suggested_target}**")
-    target_col = st.selectbox(
-        "🎯 Confirm or Change Target Column", columns, index=default_idx
+    st.markdown(
+        """
+        <div class="feature-ribbon">
+            <div class="feature-ribbon__item"><span>Step 1</span><strong>Lock the target and workspace</strong></div>
+            <div class="feature-ribbon__item"><span>Step 2</span><strong>Pick goal, mode, and metric</strong></div>
+            <div class="feature-ribbon__item"><span>Step 3</span><strong>Tune cleanup, PCA, and validation</strong></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
+
+    setup_cols = st.columns([1.2, 1])
+    with setup_cols[0]:
+        st.info(f"💡 Auto-detected target column: **{suggested_target}**")
+        target_col = st.selectbox(
+            "🎯 Confirm or Change Target Column", columns, index=default_idx
+        )
 
     sanitizer_report = profile.get("sanitizer", {}) or {}
     sanitizer_logs = profile.get("sanitizer_logs", []) or []
@@ -757,9 +915,17 @@ if st.session_state.get("profile"):
                 for line in sanitizer_logs[:10]:
                     st.caption(f"• {line}")
 
-    workspace_col, preset_col, resume_col = st.columns([1, 1, 0.8])
+    st.markdown("### Training Mission Setup")
+    workspace_col, preset_col, resume_col = st.columns([1.1, 1, 0.85])
     with workspace_col:
-        workspace_name = st.text_input("Workspace Name", key="workspace_name_choice")
+        workspace_name = st.text_input(
+            "Workspace Name", 
+            key="workspace_name_choice",
+            help="Provide a descriptive name for this training run. Leave empty to use timestamp."
+        )
+        if not workspace_name.strip():
+            workspace_name = f"Auto-{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
+            st.caption(f"💡 Using: {workspace_name}")
     with preset_col:
         preset_name = st.selectbox(
             "Training Preset",
@@ -787,46 +953,56 @@ if st.session_state.get("profile"):
                 st.error(f"Resume failed: {e}")
 
     preset = preset_defaults.get(preset_name, preset_defaults["Balanced"])
-    goal = preset["goal"]
-    mode = preset["mode"]
-    if st.session_state.get("cv_folds_choice", 0) <= 1:
-        st.session_state["cv_folds_choice"] = preset["cv"]
-    if "handle_imbalance_choice" in st.session_state:
-        st.session_state["handle_imbalance_choice"] = st.session_state.get(
-            "handle_imbalance_choice", preset["imbalance"]
-        )
-    if "auto_clean_choice" in st.session_state:
-        st.session_state["auto_clean_choice"] = st.session_state.get(
-            "auto_clean_choice", preset["auto_clean"]
-        )
+    
+    # Initialize preset values ONLY if user hasn't explicitly changed them
+    # Use a key to track if user has modified these values
+    if f"_preset_{preset_name}_applied" not in st.session_state:
+        goal = preset["goal"]
+        mode = preset["mode"]
+        st.session_state["goal_choice"] = goal
+        st.session_state["mode_choice"] = mode
+        if st.session_state.get("cv_folds_choice", 0) <= 1:
+            st.session_state["cv_folds_choice"] = preset["cv"]
+        if "handle_imbalance_choice" not in st.session_state:
+            st.session_state["handle_imbalance_choice"] = preset["imbalance"]
+        if "auto_clean_choice" not in st.session_state:
+            st.session_state["auto_clean_choice"] = preset["auto_clean"]
+        st.session_state[f"_preset_{preset_name}_applied"] = True
+    else:
+        # Use current session state values (user may have modified)
+        goal = st.session_state.get("goal_choice", preset["goal"])
+        mode = st.session_state.get("mode_choice", preset["mode"])
 
+    st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+    st.markdown("#### Strategy Sequence")
+    st.info(
+        f"📌 **Active Preset**: {preset_name} - You can override any setting below. Switching presets will reset to defaults."
+    )
     col1, col2 = st.columns(2)
+    goal_options = ["🎯 Performance(best results)", "⚡ Speed(fast)", "⚖️ Balanced"]
+    mode_options = [
+        "⚡ Fast (Exploration only)",
+        "⚖️ Balanced (Standard optimization)",
+        "🧠 Full (Deep Bayesian Search)",
+    ]
+    
+    goal_idx = goal_options.index(goal) if goal in goal_options else 0
+    mode_idx = mode_options.index(mode) if mode in mode_options else 1
+    
     with col1:
         goal = st.radio(
             "Select Goal",
-            ["🎯 Performance(best results)", "⚡ Speed(fast)", "⚖️ Balanced"],
+            goal_options,
             key="goal_choice",
-            index=[
-                "🎯 Performance(best results)",
-                "⚡ Speed(fast)",
-                "⚖️ Balanced",
-            ].index(goal),
+            index=goal_idx,
             help="Performance = widest model search | Speed = smaller fast pool | Balanced = strong middle ground",
         )
     with col2:
         mode = st.radio(
             "Select Execution Mode (V3)",
-            [
-                "⚡ Fast (Exploration only)",
-                "⚖️ Balanced (Standard optimization)",
-                "🧠 Full (Deep Bayesian Search)",
-            ],
+            mode_options,
             key="mode_choice",
-            index=[
-                "⚡ Fast (Exploration only)",
-                "⚖️ Balanced (Standard optimization)",
-                "🧠 Full (Deep Bayesian Search)",
-            ].index(mode),
+            index=mode_idx,
             help="Fast = sweep only | Balanced = moderate optimization | Full = deeper Bayesian optimization",
         )
 
@@ -866,14 +1042,16 @@ if st.session_state.get("profile"):
             else:
                 if st.session_state.get("eval_metric_choice") not in {
                     "Accuracy",
+                    "Precision",
+                    "Recall",
                     "F1-score",
                 }:
                     st.session_state["eval_metric_choice"] = "Accuracy"
                 eval_metric = st.selectbox(
                     "Metric (Classification)",
-                    ["Accuracy", "F1-score"],
+                    ["Accuracy", "Precision", "Recall", "F1-score"],
                     key="eval_metric_choice",
-                    help="Default: Accuracy. F1 = good for imbalanced data.",
+                    help="Choose the primary optimization target for classification runs.",
                 )
 
             st.markdown("---")
@@ -911,6 +1089,23 @@ if st.session_state.get("profile"):
 
             st.markdown("---")
 
+            st.markdown("#### 🧬 Dimensionality / PCA")
+            pca_mode = st.selectbox(
+                "PCA Strategy",
+                ["auto", "always", "off"],
+                key="pca_mode_choice",
+                help="Auto lets the backend decide, Always forces PCA on numeric features, Off disables PCA.",
+            )
+            pca_components = st.slider(
+                "PCA Components Override",
+                min_value=0,
+                max_value=max(0, len(profile.get("num_cols", []) or [])),
+                key="pca_components_choice",
+                help="0 keeps the backend's default component count. Any value above 1 acts as an explicit limit when PCA is enabled.",
+            )
+
+            st.markdown("---")
+
             # ── 10. Cross-Validation ─────────────────────────────────────
             st.markdown("#### 🧪 Cross-Validation")
             cv_folds = st.slider(
@@ -918,7 +1113,7 @@ if st.session_state.get("profile"):
                 min_value=0,
                 max_value=10,
                 key="cv_folds_choice",
-                help="Set to 0-1 to disable CV. 5-10 is standard but takes more time.",
+                help="0 = disabled (no CV) | 3-5 = fast validation | 7-10 = rigorous but slow. Higher values detect overfitting better.",
             )
 
         st.markdown("---")
@@ -946,6 +1141,8 @@ if st.session_state.get("profile"):
             st.session_state["handle_imbalance_choice"] = False
             st.session_state["auto_clean_choice"] = True
             st.session_state["cv_folds_choice"] = 0
+            st.session_state["pca_mode_choice"] = "auto"
+            st.session_state["pca_components_choice"] = 0
             st.rerun()
 
     goal_map = {
@@ -973,6 +1170,8 @@ if st.session_state.get("profile"):
                     "handle_imbalance": handle_imbalance,
                     "auto_clean": auto_clean,
                     "cv_folds": cv_folds or preset["cv"],
+                    "pca_mode": pca_mode,
+                    "pca_components": pca_components,
                     "preset_name": preset_name,
                 },
                 sort_keys=True,
@@ -993,13 +1192,20 @@ if st.session_state.get("profile"):
         st.caption(
             f"Memory risk: {forecast_payload.get('memory_risk', '—')} · "
             f"Optuna trials: {forecast_payload.get('optuna_trials', 0)} · "
-            f"Features in play: {forecast_payload.get('estimated_feature_count', '—')}"
+            f"Features in play: {forecast_payload.get('estimated_feature_count', '—')} · "
+            f"PCA: {forecast_payload.get('pca_mode', 'auto')}"
         )
         for note in forecast_payload.get("notes", [])[:3]:
             st.caption(f"• {note}")
 
+    summary_cards = st.columns(4)
+    summary_cards[0].metric("Primary Metric", eval_metric)
+    summary_cards[1].metric("PCA Mode", pca_mode.title())
+    summary_cards[2].metric("PCA Components", pca_components or "Auto")
+    summary_cards[3].metric("CV Folds", cv_folds or preset["cv"])
+
     st.caption(
-        f"Advanced summary: metric `{eval_metric}` · imbalance `{handle_imbalance}` · auto-clean `{auto_clean}` · CV folds `{cv_folds}`"
+        f"Advanced summary: metric `{eval_metric}` · imbalance `{handle_imbalance}` · auto-clean `{auto_clean}` · PCA `{pca_mode}` · CV folds `{cv_folds}`"
     )
     sync_workspace_query_params(
         workspace=workspace_name,
@@ -1010,9 +1216,23 @@ if st.session_state.get("profile"):
         imbalance=str(handle_imbalance).lower(),
         auto_clean=str(auto_clean).lower(),
         cv_folds=cv_folds,
+        pca_mode=pca_mode,
+        pca_components=pca_components,
     )
 
     if st.button("▶ Run AutoML Engine", key="run_automl", width="stretch"):
+        # 1. VALIDATION LAYER
+        is_valid, error_msg = validate_training_payload(
+            profile, target_col, selected_features, workspace_name, 
+            st.session_state.get("dataset_id")
+        )
+        
+        if not is_valid:
+            st.error("⛔ Cannot start training. Fix the following issues:")
+            st.markdown(error_msg)
+            st.stop()
+        
+        # 2. START TRAINING
         workspace_id = ""
         try:
             workspace_resp = requests.post(
@@ -1026,6 +1246,8 @@ if st.session_state.get("profile"):
                         "mode": mode,
                         "eval_metric": eval_metric,
                         "cv_folds": cv_folds or preset["cv"],
+                        "pca_mode": pca_mode,
+                        "pca_components": pca_components,
                     },
                 },
                 timeout=10,
@@ -1034,8 +1256,10 @@ if st.session_state.get("profile"):
                 workspace_resp.json() if workspace_resp.status_code == 200 else {}
             )
             workspace_id = workspace_data.get("id", "")
-        except Exception:
+        except Exception as e:
+            st.warning(f"Could not create workspace: {str(e)[:50]}. Proceeding with training.")
             workspace_id = ""
+        
         payload = {
             "dataset_id": st.session_state["dataset_id"],
             "target_column": target_col,
@@ -1050,16 +1274,22 @@ if st.session_state.get("profile"):
             "handle_imbalance": handle_imbalance,
             "auto_clean": auto_clean,
             "cv_folds": cv_folds or preset["cv"],
+            "pca_mode": pca_mode,
+            "pca_components": pca_components,
             "export_model": export_model,
             "export_code": export_code,
             "export_report": export_report,
         }
+        
         try:
-            res = requests.post(f"{API_URL}/train", json=payload, timeout=10)
+            with st.spinner("🚀 Starting training... Do not refresh the page."):
+                res = requests.post(f"{API_URL}/train", json=payload, timeout=30)
+            
             if res.status_code == 200:
                 data = res.json()
                 if "error" in data:
-                    st.error(data["error"])
+                    st.error(f"❌ Backend error: {data['error']}")
+                    st.info("💡 Please check the training configuration and try again.")
                 else:
                     st.session_state["job_id"] = data["job_id"]
                     sync_workspace_query_params(
@@ -1071,15 +1301,41 @@ if st.session_state.get("profile"):
                         imbalance=str(handle_imbalance).lower(),
                         auto_clean=str(auto_clean).lower(),
                         cv_folds=cv_folds,
+                        pca_mode=pca_mode,
+                        pca_components=pca_components,
                     )
-                    st.success("🚀 Training started!")
+                    # Reset preset flag to allow next run
+                    for key in list(st.session_state.keys()):
+                        if key.startswith("_preset_"):
+                            del st.session_state[key]
+                    
+                    st.success("🚀 Training started successfully!")
                     st.info(
-                        "👉 Navigate to **Live Training** in the sidebar to watch progress."
+                        "👉 Redirecting to **Live Training** to watch real-time progress...\n\n"
+                        f"**Job ID**: `{data['job_id'][:8]}`"
                     )
+                    st.balloons()
+                    import time
+                    time.sleep(2)
                     st.switch_page("pages/3_Training_Lab.py")
+            elif res.status_code == 400:
+                data = res.json()
+                st.error(f"❌ Invalid request: {data.get('error', 'Check your parameters')}")
+            elif res.status_code == 409:
+                st.error("❌ Another training is already in progress. Wait or cancel it first.")
             else:
-                st.error("Failed to start training.")
+                st.error(f"❌ Server error ({res.status_code}). Please try again later.")
+                st.caption(f"If this persists, contact support with: {hash(str(res.text)) % 10000}")
+        
+        except requests.exceptions.Timeout:
+            st.error("❌ Training request timed out. The server may be busy. Try again in a moment.")
+            st.info("💡 Your training may still start in the background. Check Live Training page.")
         except requests.exceptions.ConnectionError:
-            st.error("❌ Cannot reach backend.")
+            st.error("❌ Cannot reach backend. The service may be offline or restarting.")
+            st.info("💡 Try again in 30 seconds, or check system status.")
+        except Exception as e:
+            st.error(f"❌ Unexpected error: {str(e)[:100]}")
+            st.caption(f"Please report this issue with error ID: {hash(str(e)) % 10000}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)

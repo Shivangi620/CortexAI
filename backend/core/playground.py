@@ -12,6 +12,7 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
 from sklearn.preprocessing import LabelEncoder
 from sklearn.pipeline import Pipeline
@@ -29,6 +30,7 @@ from services.training.preprocessing import make_preprocessor
 AVAILABLE_MODELS = {
     "Logistic Regression": "classification",
     "Random Forest": "both",
+    "Decision Tree": "both",
     "XGBoost": "both",
     "Linear Regression": "regression",
     "Ridge Regression": "regression",
@@ -94,6 +96,10 @@ def quick_train(
         "Random Forest": (
             RandomForestClassifier(n_estimators=30, random_state=42)
             if is_clf else RandomForestRegressor(n_estimators=30, random_state=42)
+        ),
+        "Decision Tree": (
+            DecisionTreeClassifier(max_depth=8, random_state=42)
+            if is_clf else DecisionTreeRegressor(max_depth=8, random_state=42)
         ),
     }
 

@@ -4,7 +4,7 @@ AutoML Studio — Backend Entry Point (V4)
 import csv
 import os
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,45 +16,15 @@ csv.field_size_limit(int(1e9))
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 # ── Route imports ─────────────────────────────────────────────────────────────
-try:
-    from api.routes.datasets import router as datasets_router
-except Exception:
-    datasets_router = None
 
-try:
-    from api.routes.training import router as training_router
-except Exception:
-    training_router = None
-
-try:
-    from api.routes.experiments import router as experiments_router
-except Exception:
-    experiments_router = None
-
-try:
-    from api.routes.explain import router as explain_router
-except Exception:
-    explain_router = None
-
-try:
-    from api.routes.predict import router as predict_router
-except Exception:
-    predict_router = None
-
-try:
-    from api.routes.drift import router as drift_router
-except Exception:
-    drift_router = None
-
-try:
-    from api.routes.reports import router as reports_router
-except Exception:
-    reports_router = None
-
-try:
-    from api.routes.misc import router as misc_router
-except Exception:
-    misc_router = None
+from api.routes.datasets import router as datasets_router
+from api.routes.training import router as training_router
+from api.routes.experiments import router as experiments_router
+from api.routes.explain import router as explain_router
+from api.routes.predict import router as predict_router
+from api.routes.drift import router as drift_router
+from api.routes.reports import router as reports_router
+from api.routes.misc import router as misc_router
 
 
 # ── Lifespan management ───────────────────────────────────────────────────────
@@ -80,9 +50,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+APP_ROOT = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = APP_ROOT / "frontend" / "static"
+
 allowed_origins_raw = os.getenv("AUTOML_ALLOWED_ORIGINS", "*").strip()
 allowed_origins = (
-    ["*"]
+    ["http://localhost:3000", "http://localhost:8501"]
     if not allowed_origins_raw or allowed_origins_raw == "*"
     else [origin.strip() for origin in allowed_origins_raw.split(",") if origin.strip()]
 )
@@ -96,7 +69,7 @@ app.add_middleware(
 )
 
 
-# ── Mount routers safely ──────────────────────────────────────────────────────
+# ── Mount routers ─────────────────────────────────────────────────────────────
 for r in [
     datasets_router,
     training_router,
@@ -107,11 +80,7 @@ for r in [
     reports_router,
     misc_router,
 ]:
-    try:
-        if r:
-            app.include_router(r)
-    except Exception as e:
-        log.warning(f"Router mount failed: {e}")
+    app.include_router(r)
 
 
 
@@ -121,6 +90,32 @@ for r in [
 @app.get("/health", tags=["system"])
 def health_check():
     return {"status": "ok", "version": "4.0.0"}
+
+
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend-static")
+
+    @app.get("/", include_in_schema=False)
+    def serve_frontend():
+        return FileResponse(FRONTEND_DIR / "index.html")
+
+    @app.get("/index.html", include_in_schema=False)
+    def serve_frontend_index():
+        return FileResponse(FRONTEND_DIR / "index.html")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend_routes(full_path: str):
+        if not full_path:
+            return FileResponse(FRONTEND_DIR / "index.html")
+        blocked_prefixes = ("api", "docs", "redoc", "openapi.json", "static")
+        if full_path.startswith(blocked_prefixes):
+            raise HTTPException(status_code=404, detail="Not found")
+
+        candidate = FRONTEND_DIR / full_path
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(candidate)
+
+        return FileResponse(FRONTEND_DIR / "index.html")
 
 
 

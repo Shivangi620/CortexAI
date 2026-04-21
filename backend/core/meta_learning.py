@@ -8,7 +8,7 @@ try:
     import lightgbm as lgb
 except Exception:
     lgb = None
-from infra.database import get_db, MetaLearningRecord
+from infra.database import get_db, db_session, MetaLearningRecord
 
 # ── Meta-Feature Extraction ───────────────────────────────────────────────────
 
@@ -58,13 +58,14 @@ def extract_meta_features(profile: dict) -> dict:
 
 class MetaLearner:
     def __init__(self):
-        self.model = (
-            lgb.LGBMRegressor(
-                n_estimators=100, learning_rate=0.1, random_state=42
-            )
-            if lgb is not None
-            else None
-        )
+        self.model = None
+        if lgb is not None:
+            try:
+                self.model = lgb.LGBMRegressor(
+                    n_estimators=100, learning_rate=0.1, random_state=42
+                )
+            except Exception:
+                self.model = None
         self.is_trained = False
         self.min_records = 10
         self.val_error = 1.0  # High error initially
@@ -102,7 +103,7 @@ class MetaLearner:
         return df.drop(columns=["score"], errors="ignore"), df.get("score")
 
     def train(self):
-        with get_db() as db:
+        with db_session() as db:
             raw_records = db.query(MetaLearningRecord).all()
 
             records = [
@@ -230,7 +231,7 @@ def get_cross_dataset_insights(profile: dict) -> Dict[str, Any]:
     rows_cur = mf["n_rows"]
     cols_cur = mf["n_cols"]
 
-    with get_db() as db:
+    with db_session() as db:
         records = (
             db.query(MetaLearningRecord)
             .order_by(MetaLearningRecord.created_at.desc())
@@ -297,7 +298,7 @@ def zero_shot_recommend(profile: dict, model_pool: Optional[List[str]] = None) -
 def save_meta_record(profile: dict, results: dict):
     """Persist a meta-learning record."""
     mf = extract_meta_features(profile)
-    with get_db() as db:
+    with db_session() as db:
         record = MetaLearningRecord(
             meta_features_json=json.dumps(mf),
             best_model=results.get("best_model", ""),

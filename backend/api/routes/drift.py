@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from infra.database import DriftCheck, DriftSchedule, DatasetModel, JobModel, get_db
+from infra.database import DriftCheck, DriftSchedule, DatasetModel, JobModel, get_db, db_session
 from infra.result_contract import normalize_results
 
 csv.field_size_limit(int(1e9))
@@ -20,7 +20,7 @@ async def detect_drift(job_id: str, file: UploadFile = File(...)):
     Feature 6: Drift dashboard.
     Upload a new CSV; compare its feature distributions against training baseline.
     """
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if not job or job.status != "completed":
             raise HTTPException(status_code=404, detail="Job not completed")
@@ -111,7 +111,7 @@ async def detect_drift(job_id: str, file: UploadFile = File(...)):
     )
 
     try:
-        with get_db() as db:
+        with db_session() as db:
             job = db.query(JobModel).filter(JobModel.id == job_id).first()
             schedule_row = db.query(DriftSchedule).filter(DriftSchedule.job_id == job_id).first()
             db.add(
@@ -127,6 +127,7 @@ async def detect_drift(job_id: str, file: UploadFile = File(...)):
             if schedule_row:
                 schedule_row.last_alert_status = report.get("alert_level")
                 schedule_row.last_alert_summary = json.dumps(report.get("alert_summary") or {})
+            db.commit()
     except Exception:
         pass
 
@@ -135,7 +136,7 @@ async def detect_drift(job_id: str, file: UploadFile = File(...)):
 
 @router.get("/drift/{job_id}/history")
 def drift_history(job_id: str):
-    with get_db() as db:
+    with db_session() as db:
         rows = (
             db.query(DriftCheck)
             .filter(DriftCheck.job_id == job_id)
@@ -160,7 +161,7 @@ def drift_history(job_id: str):
 
 @router.get("/drift/{job_id}/feature-timeline")
 def drift_feature_timeline(job_id: str, feature: str | None = None):
-    with get_db() as db:
+    with db_session() as db:
         rows = (
             db.query(DriftCheck)
             .filter(DriftCheck.job_id == job_id)
@@ -207,7 +208,7 @@ def drift_feature_timeline(job_id: str, feature: str | None = None):
 
 @router.get("/drift/{job_id}/schedule")
 def get_drift_schedule(job_id: str):
-    with get_db() as db:
+    with db_session() as db:
         row = db.query(DriftSchedule).filter(DriftSchedule.job_id == job_id).first()
         latest_check = (
             db.query(DriftCheck)
@@ -242,7 +243,14 @@ def get_drift_schedule(job_id: str):
         next_due_at = None
         due_now = False
         if latest_check and latest_check.created_at:
-            next_due = latest_check.created_at + timedelta(days=frequency_days)
+            created_at = latest_check.created_at
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at)
+                except Exception:
+                    created_at = datetime.utcnow()
+            
+            next_due = created_at + timedelta(days=frequency_days)
             next_due_at = next_due.isoformat()
             due_now = enabled and next_due <= datetime.utcnow()
         elif enabled:
@@ -273,7 +281,7 @@ def save_drift_schedule(
     frequency_days = max(1, int(frequency_days or 7))
     warning_threshold = max(0.01, float(warning_threshold or 0.1))
     critical_threshold = max(warning_threshold, float(critical_threshold or 0.2))
-    with get_db() as db:
+    with db_session() as db:
         row = db.query(DriftSchedule).filter(DriftSchedule.job_id == job_id).first()
         if row:
             row.enabled = str(bool(enabled)).lower()
@@ -290,6 +298,7 @@ def save_drift_schedule(
                     critical_threshold=str(critical_threshold),
                 )
             )
+        db.commit()
     return {
         "job_id": job_id,
         "enabled": enabled,
@@ -305,7 +314,7 @@ async def retrain_on_drift_dataset(job_id: str, file: UploadFile = File(...)):
     from core.data_profiler import profile_dataset
     from api.routes.training import TrainRequest, start_training
 
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="Original job not found")
@@ -343,7 +352,7 @@ async def retrain_on_drift_dataset(job_id: str, file: UploadFile = File(...)):
     except Exception:
         profile_json = json.dumps({})
 
-    with get_db() as db:
+    with db_session() as db:
         db.add(
             DatasetModel(
                 id=new_dataset_id,

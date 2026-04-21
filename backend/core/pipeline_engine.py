@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 import pandas as pd
 
-from infra.database import get_db, JobModel
+from infra.database import get_db, db_session, JobModel
 from infra.logger import get_logger
 from infra.result_contract import sanitize_for_json
 
@@ -133,7 +133,7 @@ class PipelineEngine:
 
     def _sync_reasoning(self):
         try:
-          with get_db() as db:
+          with db_session() as db:
             job = db.query(JobModel).filter(JobModel.id == self.ctx.job_id).first()
             if job:
                 reasoning = self.ctx.reasoning if isinstance(self.ctx.reasoning, list) else []
@@ -149,7 +149,7 @@ class PipelineEngine:
 
     def _append_history(self, entry: Dict[str, Any]):
         try:
-            with get_db() as db:
+            with db_session() as db:
                 job = db.query(JobModel).filter(JobModel.id == self.ctx.job_id).first()
                 if not job:
                     return
@@ -169,7 +169,7 @@ class PipelineEngine:
         self.log(f"Status update: {step.value}")
 
         try:
-            with get_db() as db:
+            with db_session() as db:
                 job = db.query(JobModel).filter(JobModel.id == self.ctx.job_id).first()
                 if job:
                     job.status = "training"
@@ -182,7 +182,7 @@ class PipelineEngine:
 
     def mark_failed(self, error_msg: str):
         try:
-          with get_db() as db:
+          with db_session() as db:
             job = db.query(JobModel).filter(JobModel.id == self.ctx.job_id).first()
             if job:
                 job.status = "failed"
@@ -225,7 +225,13 @@ class PipelineEngine:
             return self.ctx
 
         except Exception as e:
-            err_msg = f"Pipeline Failed in {comp_name}: {str(e)}\n{traceback.format_exc()}"
+            err_msg = f"Pipeline Failed in {comp_name}: {str(e)}"
+            log.error(
+                "[Pipeline][%s] %s\n%s",
+                self.ctx.job_id,
+                err_msg,
+                traceback.format_exc(),
+            )
             self.log(err_msg)
             self.mark_failed(str(e))
             raise e

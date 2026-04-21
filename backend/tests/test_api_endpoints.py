@@ -1,9 +1,8 @@
 import json
 import math
 import os
-
 from infra.database import DatasetModel, ExperimentRun, JobModel
-from tests.conftest import TestingSessionLocal
+from .conftest import TestingSessionLocal
 
 
 def test_health_check(client):

@@ -27,6 +27,8 @@ def estimate_training_forecast(
     handle_imbalance: bool = False,
     auto_clean: bool = True,
     eval_metric: str = "",
+    pca_mode: str = "auto",
+    pca_components: int = 0,
 ) -> Dict[str, Any]:
     profile = profile or {}
     selected_features = list(selected_features or [])
@@ -68,6 +70,10 @@ def estimate_training_forecast(
         multiplier += mode_profile["trials"] * 0.035
     if mode == "Full":
         multiplier += 0.4
+    if str(pca_mode).lower() == "always":
+        multiplier += 0.08
+    elif str(pca_mode).lower() == "off":
+        multiplier += 0.0
 
     estimated_seconds = max(8.0, size_score * 7.0 * multiplier)
     min_seconds = int(round(max(5.0, estimated_seconds * 0.65)))
@@ -101,6 +107,12 @@ def estimate_training_forecast(
         recommendations.append("Feature selection is reducing the search width, which should help runtime and stability.")
     if handle_imbalance and task_type == "classification":
         recommendations.append("Imbalance handling adds overhead but should improve minority-class behavior.")
+    if str(pca_mode).lower() == "always":
+        recommendations.append(
+            f"PCA is forced on for this run{' using ' + str(int(pca_components)) + ' components' if int(pca_components or 0) > 0 else ''}."
+        )
+    elif str(pca_mode).lower() == "off":
+        recommendations.append("PCA is disabled, so wide numeric datasets may train more slowly.")
     if not recommendations:
         recommendations.append("This configuration looks practical for an exploratory run.")
 
@@ -120,5 +132,7 @@ def estimate_training_forecast(
         "cv_folds": int(cv_folds or 0),
         "optuna_trials": mode_profile["trials"],
         "uses_bayesian_optimization": mode_profile["optuna"],
+        "pca_mode": pca_mode,
+        "pca_components": int(pca_components or 0),
         "notes": recommendations,
     }

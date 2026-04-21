@@ -1,14 +1,28 @@
 from sqlalchemy import create_engine, Column, String, Text, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import StaticPool
 from sqlalchemy import text as sql_text
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, UTC
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./automl_studio.db"
+from infra.config import settings
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
-)
+SQLALCHEMY_DATABASE_URL = settings.database_url
+
+
+def _build_engine(database_url: str):
+    connect_args = {}
+    engine_kwargs = {}
+
+    if database_url.startswith("sqlite"):
+        connect_args["check_same_thread"] = False
+        if ":memory:" in database_url:
+            engine_kwargs["poolclass"] = StaticPool
+
+    return create_engine(database_url, connect_args=connect_args, **engine_kwargs)
+
+
+engine = _build_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
@@ -20,7 +34,7 @@ Base = declarative_base()
 
 
 @contextmanager
-def get_db():
+def db_session():
     """Context manager for safe, exception-aware DB session lifecycle."""
     db = SessionLocal()
     try:
@@ -29,6 +43,15 @@ def get_db():
     except Exception:
         db.rollback()
         raise
+    finally:
+        db.close()
+
+
+def get_db():
+    """FastAPI dependency that yields a database session."""
+    db = SessionLocal()
+    try:
+        yield db
     finally:
         db.close()
 
@@ -42,7 +65,7 @@ class DatasetModel(Base):
     parent_dataset_id = Column(String, nullable=True)
     source_type = Column(String, nullable=True)
     display_name = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
 class JobModel(Base):
@@ -59,7 +82,7 @@ class JobModel(Base):
     reasoning_json = Column(Text, default="[]")
     story = Column(Text, nullable=True)
     params_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
 class MetaLearningRecord(Base):
@@ -77,7 +100,7 @@ class MetaLearningRecord(Base):
     task_type = Column(String)
     metric_name = Column(String)
     leaderboard_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
 class ExperimentRun(Base):
@@ -107,7 +130,7 @@ class ExperimentRun(Base):
     goal = Column(String, nullable=True)
     preset_name = Column(String, nullable=True)
     summary_text = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
 class WorkspaceModel(Base):
@@ -125,8 +148,12 @@ class WorkspaceModel(Base):
     settings_json = Column(Text, nullable=True)
     reports_json = Column(Text, nullable=True)
     last_run_id = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        onupdate=lambda: datetime.now(UTC).replace(tzinfo=None),
+    )
 
 
 class NotificationModel(Base):
@@ -143,7 +170,7 @@ class NotificationModel(Base):
     title = Column(String, nullable=True)
     message = Column(Text, nullable=True)
     level = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
 class DriftCheck(Base):
@@ -161,7 +188,7 @@ class DriftCheck(Base):
     status = Column(String, nullable=True)
     drift_score_pct = Column(String, nullable=True)
     report_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
 class DriftSchedule(Base):
@@ -180,8 +207,12 @@ class DriftSchedule(Base):
     critical_threshold = Column(String, nullable=True, default="0.2")
     last_alert_status = Column(String, nullable=True)
     last_alert_summary = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        onupdate=lambda: datetime.now(UTC).replace(tzinfo=None),
+    )
 
 
 class TeamNote(Base):
@@ -196,7 +227,7 @@ class TeamNote(Base):
     entity_type = Column(String, nullable=True)
     entity_id = Column(String, index=True)
     note = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
 Base.metadata.create_all(bind=engine)

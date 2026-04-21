@@ -10,6 +10,17 @@ import numpy as np
 from typing import Dict, Any, List
 from services.data_sanitizer import sanitize_dataframe
 
+try:
+    from sklearn.calibration import calibration_curve
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.metrics import f1_score, precision_score, recall_score
+except Exception:
+    calibration_curve = None
+    LabelEncoder = None
+    f1_score = None
+    precision_score = None
+    recall_score = None
+
 
 def get_global_shap(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
     shap_summary = results.get("shap_summary", {})
@@ -194,14 +205,14 @@ def get_feature_lineage(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
 
 def get_calibration_report(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
     import joblib
-    from sklearn.calibration import calibration_curve
-    from sklearn.preprocessing import LabelEncoder
-    from infra.database import get_db, JobModel, DatasetModel
+    from infra.database import get_db, db_session, JobModel, DatasetModel
     from infra.storage import resolve_model_path
     from core.file_loader import load_dataframe
 
     if not results.get("is_classification"):
         return {"error": "Calibration report is only available for classification models."}
+    if calibration_curve is None or LabelEncoder is None:
+        return {"error": "Calibration analysis is unavailable because scikit-learn calibration utilities could not be loaded."}
 
     model_path = resolve_model_path(job_id) or results.get("model_path")
     if not model_path or not os.path.exists(model_path):
@@ -213,7 +224,7 @@ def get_calibration_report(job_id: str, results: Dict[str, Any]) -> Dict[str, An
         return {"error": f"Failed to load model: {e}"}
 
     try:
-        with get_db() as db:
+        with db_session() as db:
             job = db.query(JobModel).filter(JobModel.id == job_id).first()
             dataset = db.query(DatasetModel).filter(DatasetModel.id == job.dataset_id).first() if job else None
             profile = json.loads(dataset.profile_json) if dataset and dataset.profile_json else {}
@@ -256,14 +267,14 @@ def get_calibration_report(job_id: str, results: Dict[str, Any]) -> Dict[str, An
 
 def get_threshold_tuning(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
     import joblib
-    from sklearn.metrics import f1_score, precision_score, recall_score
-    from sklearn.preprocessing import LabelEncoder
-    from infra.database import get_db, JobModel, DatasetModel
+    from infra.database import get_db, db_session, JobModel, DatasetModel
     from infra.storage import resolve_model_path
     from core.file_loader import load_dataframe
 
     if not results.get("is_classification"):
         return {"error": "Threshold tuning is only available for classification models."}
+    if precision_score is None or recall_score is None or f1_score is None or LabelEncoder is None:
+        return {"error": "Threshold tuning is unavailable because the required scikit-learn utilities could not be loaded."}
 
     model_path = resolve_model_path(job_id) or results.get("model_path")
     if not model_path or not os.path.exists(model_path):
@@ -275,7 +286,7 @@ def get_threshold_tuning(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]
         return {"error": f"Failed to load model: {e}"}
 
     try:
-        with get_db() as db:
+        with db_session() as db:
             job = db.query(JobModel).filter(JobModel.id == job_id).first()
             dataset = db.query(DatasetModel).filter(DatasetModel.id == job.dataset_id).first() if job else None
             profile = json.loads(dataset.profile_json) if dataset and dataset.profile_json else {}
@@ -323,14 +334,12 @@ def generate_counterfactual(
     job_id: str,
     results: Dict[str, Any],
     features: Dict[str, Any],
+    target_prediction: Optional[float] = None,
 ) -> Dict[str, Any]:
     import joblib
-    from infra.database import DatasetModel, JobModel, get_db
+    from infra.database import DatasetModel, JobModel, get_db, db_session
     from infra.storage import resolve_model_path
     from core.file_loader import load_dataframe
-
-    if not results.get("is_classification"):
-        return {"error": "Counterfactuals are currently available for classification models."}
 
     model_path = resolve_model_path(job_id) or results.get("model_path")
     if not model_path or not os.path.exists(model_path):
@@ -343,7 +352,7 @@ def generate_counterfactual(
 
     feature_names = results.get("feature_names") or []
     try:
-        with get_db() as db:
+        with db_session() as db:
             job = db.query(JobModel).filter(JobModel.id == job_id).first()
             dataset = db.query(DatasetModel).filter(DatasetModel.id == job.dataset_id).first() if job else None
             df = load_dataframe(filepath=dataset.file_path) if dataset and dataset.file_path else None
@@ -359,6 +368,79 @@ def generate_counterfactual(
         return {"error": f"Missing features: {missing[:8]}"}
 
     input_df = pd.DataFrame([row])
+
+    if not results.get("is_classification"):
+        if target_prediction is None:
+            return {
+                "error": "Regression goal seeking requires a numeric target prediction."
+            }
+        try:
+            current_pred = float(pipeline.predict(input_df)[0])
+        except Exception as e:
+            return {"error": f"Could not score input row: {e}"}
+
+        candidates = []
+        current_gap = abs(current_pred - float(target_prediction))
+        for feature in feature_names[:12]:
+            if feature not in df.columns:
+                continue
+            series = pd.to_numeric(df[feature], errors="coerce")
+            if series.dropna().empty:
+                continue
+            current_val = row.get(feature)
+            try:
+                current_num = float(current_val)
+            except Exception:
+                continue
+
+            targets = [
+                current_num * 0.9,
+                current_num * 1.1,
+                float(series.median()),
+                float(series.quantile(0.25)),
+                float(series.quantile(0.75)),
+            ]
+            deduped_targets = []
+            for value in targets:
+                if not np.isfinite(value):
+                    continue
+                if any(abs(value - seen) < 1e-9 for seen in deduped_targets):
+                    continue
+                deduped_targets.append(value)
+
+            for target_val in deduped_targets:
+                trial = dict(row)
+                trial[feature] = float(target_val)
+                trial_df = pd.DataFrame([trial])
+                try:
+                    pred = float(pipeline.predict(trial_df)[0])
+                except Exception:
+                    continue
+                gap = abs(pred - float(target_prediction))
+                if gap < current_gap:
+                    candidates.append(
+                        {
+                            "feature": feature,
+                            "from": current_val,
+                            "to": round(float(target_val), 6),
+                            "change": round(float(target_val) - current_num, 6),
+                            "new_prediction": round(pred, 6),
+                            "target_gap": round(gap, 6),
+                        }
+                    )
+
+        candidates.sort(key=lambda item: (item.get("target_gap", 999999), abs(item.get("change", 0))))
+        return {
+            "current_prediction": round(current_pred, 6),
+            "target_prediction": float(target_prediction),
+            "suggestions": candidates[:5],
+            "message": (
+                "These are the smallest single-feature adjustments that moved the prediction closer to the target."
+                if candidates
+                else "No one-step numeric adjustment improved the prediction toward the requested target."
+            ),
+        }
+
     try:
         original_pred = pipeline.predict(input_df)[0]
         if not hasattr(pipeline, "predict_proba"):
@@ -367,17 +449,7 @@ def generate_counterfactual(
     except Exception as e:
         return {"error": f"Could not score input row: {e}"}
 
-    try:
-        local = explain_local(job_id, results, row)
-        contributions = local.get("feature_contributions") or {}
-    except Exception:
-        contributions = {}
-
-    ranked_features = sorted(
-        feature_names,
-        key=lambda name: abs(float(contributions.get(name, 0) or 0)),
-        reverse=True,
-    )
+    ranked_features = list(feature_names)
 
     candidates = []
     for feature in ranked_features[:8]:
@@ -440,7 +512,9 @@ def generate_counterfactual(
     if not candidates:
         return {
             "prediction": str(original_pred),
+            "current_prediction": str(original_pred),
             "confidence_pct": round(original_conf * 100, 1),
+            "target_prediction": target_prediction,
             "suggestions": [],
             "message": "No one-step counterfactual flip was found from the top influential features.",
         }
@@ -453,7 +527,9 @@ def generate_counterfactual(
     )
     return {
         "prediction": str(original_pred),
+        "current_prediction": str(original_pred),
         "confidence_pct": round(original_conf * 100, 1),
+        "target_prediction": target_prediction,
         "suggestions": candidates[:5],
         "message": "These are the smallest single-feature changes that flipped the prediction in the local search.",
     }

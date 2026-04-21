@@ -1,0 +1,32 @@
+{
+  "name": "codin-neural-console",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build:frontend": "node scripts/build-frontend.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  },
+  "description": "--- title: AutoML Studio emoji: ✨ colorFrom: blue colorTo: indigo sdk: docker app_port: 7860 pinned: false ---",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bloated11/auto_ml.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Bloated11/auto_ml/issues"
+  },
+  "homepage": "https://github.com/Bloated11/auto_ml#readme"
+}

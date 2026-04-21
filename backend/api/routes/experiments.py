@@ -1,21 +1,49 @@
 """api/routes/experiments.py — Experiment tracking dashboard (Feature 1)."""
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 import json
 import math
 from pydantic import BaseModel
 
-from infra.database import get_db, ExperimentRun, TeamNote, WorkspaceModel, JobModel
+from infra.database import get_db, db_session, ExperimentRun, TeamNote, WorkspaceModel, JobModel
 from infra.result_contract import sanitize_for_json
 from services.studio_service import experiment_diff, list_notifications
 
 router = APIRouter(prefix="/api", tags=["experiments"])
 
 
+def _safe_float(value):
+    try:
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_experiment_runs(db, raw_ids):
+    cleaned_ids = [item.strip() for item in raw_ids if item and item.strip()]
+    if not cleaned_ids:
+        raise HTTPException(status_code=422, detail="At least one run identifier is required.")
+
+    rows = db.query(ExperimentRun).filter(ExperimentRun.id.in_(cleaned_ids)).all()
+    found_ids = {row.id for row in rows}
+    missing = [item for item in cleaned_ids if item not in found_ids]
+
+    if missing:
+        job_rows = db.query(ExperimentRun).filter(ExperimentRun.job_id.in_(missing)).all()
+        for row in job_rows:
+            if row.id not in found_ids:
+                rows.append(row)
+                found_ids.add(row.id)
+
+    unresolved = [item for item in cleaned_ids if item not in found_ids and item not in {row.job_id for row in rows}]
+    return rows, unresolved
+
+
 @router.get("/experiments")
 def list_experiments(limit: int = 50, task_type: Optional[str] = None):
     """Return all experiment runs, most recent first."""
-    with get_db() as db:
+    with db_session() as db:
         q = db.query(ExperimentRun).order_by(ExperimentRun.created_at.desc())
         if task_type:
             q = q.filter(ExperimentRun.task_type == task_type)
@@ -68,8 +96,10 @@ def compare_experiments(ids: str = Query(..., description="Comma-separated exper
     """Side-by-side comparison of multiple experiment runs."""
     id_list = [i.strip() for i in ids.split(",") if i.strip()]
 
-    with get_db() as db:
-        runs = db.query(ExperimentRun).filter(ExperimentRun.id.in_(id_list)).all()
+    with db_session() as db:
+        runs, unresolved = _resolve_experiment_runs(db, id_list)
+        if not runs:
+            raise HTTPException(status_code=404, detail="No matching experiment runs were found.")
 
         comparison = []
         for r in runs:
@@ -103,7 +133,7 @@ def compare_experiments(ids: str = Query(..., description="Comma-separated exper
                 "metrics": sanitize_for_json(metrics),
             })
 
-    return {"comparison": comparison, "count": len(comparison)}
+    return {"comparison": comparison, "count": len(comparison), "unresolved": unresolved}
 
 
 @router.get("/experiments/diff")
@@ -111,21 +141,13 @@ def diff_experiments(run_a: str = Query(...), run_b: str = Query(...)):
     return experiment_diff(run_a, run_b)
 
 
-def _safe_float(value):
-    try:
-        numeric = float(value)
-        return numeric if math.isfinite(numeric) else None
-    except (TypeError, ValueError):
-        return None
-
-
 @router.get("/experiments/{run_id}")
 def get_experiment(run_id: str):
     """Get a single experiment run by ID."""
-    with get_db() as db:
+    with db_session() as db:
         r = db.query(ExperimentRun).filter(ExperimentRun.id == run_id).first()
         if not r:
-            return {"error": "Experiment not found"}
+            raise HTTPException(status_code=404, detail="Experiment not found")
 
         try:
             hyperparams = json.loads(r.hyperparams_json) if r.hyperparams_json else {}
@@ -168,7 +190,7 @@ def get_experiment(run_id: str):
 
 @router.get("/notes/{entity_type}/{entity_id}")
 def get_notes(entity_type: str, entity_id: str):
-    with get_db() as db:
+    with db_session() as db:
         rows = (
             db.query(TeamNote)
             .filter(TeamNote.entity_type == entity_type, TeamNote.entity_id == entity_id)
@@ -195,9 +217,10 @@ class TeamNoteRequest(BaseModel):
 def add_note(entity_type: str, entity_id: str, req: TeamNoteRequest):
     text = (req.note or "").strip()
     if not text:
-        return {"error": "Note cannot be empty."}
-    with get_db() as db:
+        raise HTTPException(status_code=422, detail="Note cannot be empty.")
+    with db_session() as db:
         db.add(TeamNote(entity_type=entity_type, entity_id=entity_id, note=text))
+        db.commit()
     return {"ok": True}
 
 
@@ -210,7 +233,7 @@ class WorkspaceRequest(BaseModel):
 
 @router.get("/workspaces")
 def list_workspaces():
-    with get_db() as db:
+    with db_session() as db:
         rows = db.query(WorkspaceModel).order_by(WorkspaceModel.updated_at.desc()).all()
         return {
             "workspaces": [
@@ -232,8 +255,8 @@ def list_workspaces():
 def create_workspace(req: WorkspaceRequest):
     name = (req.name or "").strip()
     if not name:
-        return {"error": "Workspace name is required"}
-    with get_db() as db:
+        raise HTTPException(status_code=422, detail="Workspace name is required")
+    with db_session() as db:
         row = db.query(WorkspaceModel).filter(WorkspaceModel.name == name).first()
         if row:
             row.dataset_id = req.dataset_id or row.dataset_id
@@ -254,7 +277,7 @@ def create_workspace(req: WorkspaceRequest):
 
 @router.get("/workspaces/resume")
 def resume_last_completed_run(workspace_id: Optional[str] = None):
-    with get_db() as db:
+    with db_session() as db:
         if workspace_id:
             workspace = db.query(WorkspaceModel).filter(WorkspaceModel.id == workspace_id).first()
             if workspace and workspace.last_job_id:
@@ -273,7 +296,7 @@ def resume_last_completed_run(workspace_id: Optional[str] = None):
             .first()
         )
         if not latest:
-            return {"error": "No completed run found"}
+            raise HTTPException(status_code=404, detail="No completed run found")
         return {"job_id": latest.id, "dataset_id": latest.dataset_id}
 
 

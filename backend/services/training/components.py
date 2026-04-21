@@ -38,8 +38,14 @@ except Exception:
 from core.pipeline_engine import PipelineComponent, PipelineContext, PipelineStep
 from core.feature_engine import ManagedFeatureEngine
 from core.integrations import MLTracking
-from infra.database import DatasetModel, get_db
-from infra.storage import ModelRegistry, DataContract, get_model_path, get_schema_path, save_metrics
+from infra.database import DatasetModel, get_db, db_session
+from infra.storage import (
+    ModelRegistry,
+    DataContract,
+    get_model_path,
+    get_schema_path,
+    save_metrics,
+)
 from services.data_sanitizer import sanitize_dataframe, summarize_experiment
 from services.leakage_service import run_leakage_report
 from services.training.preprocessing import (
@@ -49,6 +55,21 @@ from services.training.preprocessing import (
 )
 from services.training.evaluator import _resolve_scoring, stability_check
 from services.training.model_selector import ModelSelector
+
+
+def _resolve_target_column_name(columns, requested_target):
+    requested = (requested_target or "").strip()
+    if not requested:
+        return None
+    if requested in columns:
+        return requested
+
+    normalized_requested = requested.casefold().replace(" ", "").replace("_", "")
+    for column in columns:
+        normalized_column = str(column).casefold().replace(" ", "").replace("_", "")
+        if normalized_column == normalized_requested:
+            return column
+    return None
 
 
 class DataValidationComponent(PipelineComponent):
@@ -61,10 +82,16 @@ class DataValidationComponent(PipelineComponent):
             f"DataValidation: Loaded dataset with {df.shape[1]} columns: {list(df.columns)}"
         )
 
-        if ctx.target_column not in df.columns:
+        resolved_target = _resolve_target_column_name(df.columns, ctx.target_column)
+        if resolved_target is None:
             raise ValueError(
                 f"Target column '{ctx.target_column}' not found in dataset"
             )
+        if resolved_target != ctx.target_column:
+            ctx.reasoning.append(
+                f"DataValidation: Using matched target column '{resolved_target}' for requested input '{ctx.target_column}'."
+            )
+            ctx.target_column = resolved_target
 
         selected_features = ctx.config.get("selected_features")
         if selected_features:
@@ -83,7 +110,10 @@ class DataValidationComponent(PipelineComponent):
             "DataValidation: Applied the shared sanitizer/validator before profiling and training."
         )
         if not sanitized.report.get("target_valid", True):
-            raise ValueError(sanitized.report.get("target_issue") or "Invalid target column after sanitization.")
+            raise ValueError(
+                sanitized.report.get("target_issue")
+                or "Invalid target column after sanitization."
+            )
 
         # 1. Null Value Thresholds (NaN > 90% is critical failure)
         nan_percentages = df.isna().mean()
@@ -291,18 +321,43 @@ class ModelSelectionComponent(PipelineComponent):
             f"Meta-Learner: {meta_rec['reason']} (Source: {meta_rec['source']})"
         )
         ctx.model_pool = model_pool
+        pca_mode = str(ctx.config.get("pca_mode") or "auto").lower()
+        pca_components = int(ctx.config.get("pca_components", 0) or 0)
         if ctx.mode == "Full":
-            ctx.preprocessor = make_preprocessor(ctx.num_cols, ctx.cat_cols)
+            ctx.preprocessor = make_preprocessor(
+                ctx.num_cols,
+                ctx.cat_cols,
+                pca_mode=pca_mode,
+                pca_components=pca_components,
+            )
             ctx.reasoning.append(
                 "Preprocessor: Full mode selected richer preprocessing with skew/outlier/interactions."
             )
         else:
-            ctx.preprocessor = make_lite_preprocessor(ctx.num_cols, ctx.cat_cols)
+            ctx.preprocessor = make_lite_preprocessor(
+                ctx.num_cols,
+                ctx.cat_cols,
+                pca_mode=pca_mode,
+                pca_components=pca_components,
+            )
             ctx.reasoning.append(
                 "Preprocessor: Lite preprocessing selected for faster iteration."
             )
 
-        if len(ctx.num_cols) >= 40:
+        if pca_mode == "always":
+            if pca_components > 1:
+                ctx.reasoning.append(
+                    f"Dimensionality: PCA forced on using up to {pca_components} components for the numeric branch."
+                )
+            else:
+                ctx.reasoning.append(
+                    "Dimensionality: PCA forced on for the numeric branch."
+                )
+        elif pca_mode == "off":
+            ctx.reasoning.append(
+                "Dimensionality: PCA disabled by the training configuration."
+            )
+        elif len(ctx.num_cols) >= 40:
             ctx.reasoning.append(
                 "Dimensionality: PCA compression enabled for the numeric branch to keep wide datasets responsive."
             )
@@ -485,7 +540,7 @@ class TrainingComponent(PipelineComponent):
             ctx.reasoning.append(f"Preprocessed Shape: {X_swp_proc.shape}")
         except Exception as e:
             raise ValueError(
-                f"Preprocessor failed to transform sweep data: {type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+                f"Preprocessor failed to transform sweep data: {type(e).__name__}: {str(e)}"
             )
 
         sweep_results = []
@@ -498,7 +553,13 @@ class TrainingComponent(PipelineComponent):
                 model = self._apply_imbalance_strategy(model, ctx)
                 model.fit(X_swp_proc, y_swp)
                 score, std_score, metric_extras = stability_check(
-                    model, X_swp_proc, y_swp, ctx.is_classification
+                    model,
+                    X_swp_proc,
+                    y_swp,
+                    ctx.is_classification,
+                    scoring_name=_resolve_scoring(
+                        ctx.config.get("eval_metric", ""), ctx.is_classification
+                    ),
                 )
                 row = {
                     "name": name,
@@ -529,7 +590,6 @@ class TrainingComponent(PipelineComponent):
                 )
             except Exception as e:
                 error_detail = f"{type(e).__name__}: {str(e)}"
-                tb_str = traceback.format_exc()
                 model_debug_rows.append(
                     {
                         "model": name,
@@ -543,7 +603,6 @@ class TrainingComponent(PipelineComponent):
                     }
                 )
                 ctx.reasoning.append(f"Sweep Failed for {name}: {error_detail}")
-                ctx.reasoning.append(f"Traceback: {tb_str}")
                 ctx.record_history(
                     name, f"failed: {error_detail}", phase="sweep", status="failed"
                 )
@@ -683,10 +742,18 @@ class TrainingComponent(PipelineComponent):
                     final_model = self._apply_imbalance_strategy(final_model, ctx)
                     winner_pool_name = name
 
-            if not final_model:
-                final_model = top_candidates[0]["model"]
-                winner_pool_name = top_candidates[0]["name"]
+            final_model, winner_pool_name = _resolve_final_model_choice(
+                final_model,
+                winner_pool_name,
+                top_candidates,
+            )
 
+        final_model = _coerce_estimator_instance(
+            final_model,
+            winner_pool_name,
+            ctx.model_pool,
+            top_candidates,
+        )
         ctx.final_model = final_model
         ctx.winner_pool_name = winner_pool_name
         if ctx.config.get("handle_imbalance") and ctx.is_classification:
@@ -701,6 +768,33 @@ class TrainingComponent(PipelineComponent):
         final_pipe.fit(ctx.X_train, ctx.y_train)
         ctx.final_model = final_pipe
         ctx.execution_profile = execution_profile
+
+
+def _resolve_final_model_choice(final_model, winner_pool_name, top_candidates):
+    if final_model is None:
+        return top_candidates[0]["model"], top_candidates[0]["name"]
+    return final_model, winner_pool_name
+
+
+def _coerce_estimator_instance(final_model, winner_pool_name, model_pool, top_candidates):
+    if final_model is not None and not isinstance(final_model, str):
+        return final_model
+
+    candidate_name = winner_pool_name if isinstance(winner_pool_name, str) and winner_pool_name else None
+    if isinstance(final_model, str) and final_model:
+        candidate_name = final_model
+
+    if candidate_name and candidate_name in model_pool:
+        return model_pool[candidate_name]
+
+    if top_candidates:
+        top_model = top_candidates[0].get("model")
+        if top_model is not None and not isinstance(top_model, str):
+            return top_model
+
+    raise ValueError(
+        f"Resolved final estimator is invalid: {type(final_model).__name__} ({final_model!r})"
+    )
 
 
 class EvaluationComponent(PipelineComponent):
@@ -748,12 +842,120 @@ class EvaluationComponent(PipelineComponent):
                 key=lambda item: abs(float(item[1])),
                 reverse=True,
             )
-            return {
-                str(name): round(float(score), 6)
-                for name, score in ranked[:15]
-            }
+            return {str(name): round(float(score), 6) for name, score in ranked[:15]}
         except Exception:
             return {}
+
+    def _primary_metric_label(self, ctx: PipelineContext) -> str:
+        metric = str(ctx.config.get("eval_metric") or "").strip()
+        if metric:
+            return f"CV {metric}"
+        return "CV Accuracy" if ctx.is_classification else "CV R² Score"
+
+    def _classification_primary_score(self, y_true, y_pred, scoring_name: str) -> float:
+        if scoring_name == "f1_weighted":
+            return float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
+        if scoring_name == "precision_weighted":
+            return float(
+                precision_score(y_true, y_pred, average="weighted", zero_division=0)
+            )
+        if scoring_name == "recall_weighted":
+            return float(
+                recall_score(y_true, y_pred, average="weighted", zero_division=0)
+            )
+        return float(accuracy_score(y_true, y_pred))
+
+    def _regression_primary_score(self, y_true, y_pred, scoring_name: str) -> float:
+        if scoring_name == "neg_mean_absolute_error":
+            return -float(mean_absolute_error(y_true, y_pred))
+        if scoring_name == "neg_mean_squared_error":
+            return -float(mean_squared_error(y_true, y_pred))
+        if scoring_name == "neg_root_mean_squared_error":
+            return -float(np.sqrt(mean_squared_error(y_true, y_pred)))
+        return float(r2_score(y_true, y_pred))
+
+    def _classification_metric_bundle(
+        self, ctx: PipelineContext, preds
+    ) -> Dict[str, Any]:
+        accuracy = float(accuracy_score(ctx.y_test, preds))
+        precision = float(
+            precision_score(ctx.y_test, preds, average="weighted", zero_division=0)
+        )
+        recall = float(
+            recall_score(ctx.y_test, preds, average="weighted", zero_division=0)
+        )
+        f1 = float(f1_score(ctx.y_test, preds, average="weighted", zero_division=0))
+        roc_auc = None
+        try:
+            if hasattr(ctx.final_model, "predict_proba"):
+                probs = ctx.final_model.predict_proba(ctx.X_test)
+                if probs.shape[1] == 2:
+                    roc_auc = float(roc_auc_score(ctx.y_test, probs[:, 1]))
+                else:
+                    roc_auc = float(
+                        roc_auc_score(
+                            ctx.y_test,
+                            probs,
+                            multi_class="ovr",
+                            average="weighted",
+                        )
+                    )
+        except Exception:
+            roc_auc = None
+
+        return {
+            "accuracy": round(accuracy * 100, 1),
+            "precision": round(precision * 100, 1),
+            "recall": round(recall * 100, 1),
+            "f1": round(f1 * 100, 1),
+            "roc_auc": round(roc_auc * 100, 1) if roc_auc is not None else None,
+            "confusion_matrix": confusion_matrix(ctx.y_test, preds).tolist(),
+        }
+
+    def _regression_metric_bundle(self, ctx: PipelineContext, preds) -> Dict[str, Any]:
+        mse = float(mean_squared_error(ctx.y_test, preds))
+        rmse = float(np.sqrt(mse))
+        mae = float(mean_absolute_error(ctx.y_test, preds))
+        r2 = float(r2_score(ctx.y_test, preds))
+        mape = None
+        try:
+            denom = np.where(
+                np.abs(np.asarray(ctx.y_test)) < 1e-9,
+                np.nan,
+                np.asarray(ctx.y_test),
+            )
+            mape = float(
+                np.nanmean(np.abs((np.asarray(ctx.y_test) - np.asarray(preds)) / denom))
+                * 100
+            )
+        except Exception:
+            mape = None
+
+        return {
+            "r2": round(r2, 6),
+            "mse": round(mse, 6),
+            "rmse": round(rmse, 6),
+            "mae": round(mae, 6),
+            "mape": round(mape, 4) if mape is not None and np.isfinite(mape) else None,
+        }
+
+    def _performance_metrics_payload(
+        self, ctx: PipelineContext, scoring_name: str, metric_details: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        requested_metric = str(
+            ctx.config.get("eval_metric")
+            or ("Accuracy" if ctx.is_classification else "R²")
+        )
+        return {
+            "task_type": "classification" if ctx.is_classification else "regression",
+            "optimized_metric": {
+                "requested": requested_metric,
+                "scoring_name": scoring_name,
+                "goal": ctx.goal,
+                "mode": ctx.mode,
+            },
+            "all_metrics": metric_details,
+        }
 
     def _build_warning_payload(
         self,
@@ -795,7 +997,9 @@ class EvaluationComponent(PipelineComponent):
                 }
             )
 
-        missing_pct = float(ctx.df.isna().mean().mean() * 100) if len(ctx.df.columns) else 0.0
+        missing_pct = (
+            float(ctx.df.isna().mean().mean() * 100) if len(ctx.df.columns) else 0.0
+        )
         if missing_pct >= 20:
             warnings.append(
                 {
@@ -839,7 +1043,9 @@ class EvaluationComponent(PipelineComponent):
             int(ctx.config.get("cv_folds", 0) or 5),
             ctx.is_classification,
         )
-        scoring_name = _resolve_scoring(ctx.config.get("eval_metric", ""), ctx.is_classification)
+        scoring_name = _resolve_scoring(
+            ctx.config.get("eval_metric", ""), ctx.is_classification
+        )
         cv_scores = []
         if cv is not None:
             try:
@@ -851,13 +1057,15 @@ class EvaluationComponent(PipelineComponent):
                     scoring=scoring_name,
                 )
             except Exception as e:
-                ctx.reasoning.append(f"CrossValidation: CV scoring fallback triggered ({e}).")
+                ctx.reasoning.append(
+                    f"CrossValidation: CV scoring fallback triggered ({e})."
+                )
                 cv_scores = []
 
         holdout_score = (
-            accuracy_score(ctx.y_test, preds)
+            self._classification_primary_score(ctx.y_test, preds, scoring_name)
             if ctx.is_classification
-            else r2_score(ctx.y_test, preds)
+            else self._regression_primary_score(ctx.y_test, preds, scoring_name)
         )
         cv_mean = float(np.mean(cv_scores)) if len(cv_scores) else float(holdout_score)
         cv_std = float(np.std(cv_scores)) if len(cv_scores) else 0.0
@@ -905,67 +1113,28 @@ class EvaluationComponent(PipelineComponent):
                 "score": round(r["score"] * 100, 1),
                 "phase": "sweep",
             }
-            for k in ("precision", "recall", "f1", "mse", "mae"):
+            for k in (
+                "accuracy",
+                "precision",
+                "recall",
+                "f1",
+                "roc_auc",
+                "r2",
+                "mse",
+                "rmse",
+                "mae",
+                "mape",
+            ):
                 if k in r:
                     row[k] = r[k]
             lb.append(row)
 
-        if ctx.is_classification:
-            precision = float(
-                precision_score(
-                    ctx.y_test, preds, average="weighted", zero_division=0
-                )
-            )
-            recall = float(
-                recall_score(ctx.y_test, preds, average="weighted", zero_division=0)
-            )
-            f1 = float(
-                f1_score(ctx.y_test, preds, average="weighted", zero_division=0)
-            )
-            roc_auc = None
-            confusion = confusion_matrix(ctx.y_test, preds).tolist()
-            try:
-                if hasattr(ctx.final_model, "predict_proba"):
-                    probs = ctx.final_model.predict_proba(ctx.X_test)
-                    if probs.shape[1] == 2:
-                        roc_auc = float(roc_auc_score(ctx.y_test, probs[:, 1]))
-                    else:
-                        roc_auc = float(
-                            roc_auc_score(
-                                ctx.y_test,
-                                probs,
-                                multi_class="ovr",
-                                average="weighted",
-                            )
-                        )
-            except Exception:
-                roc_auc = None
-            lb[0]["precision"] = round(
-                precision * 100,
-                1,
-            )
-            lb[0]["recall"] = round(
-                recall * 100,
-                1,
-            )
-            lb[0]["f1"] = round(
-                f1 * 100,
-                1,
-            )
-            lb[0]["roc_auc"] = round(roc_auc * 100, 1) if roc_auc is not None else None
-            lb[0]["confusion_matrix"] = confusion
-        else:
-            rmse = float(np.sqrt(mean_squared_error(ctx.y_test, preds)))
-            mae = float(mean_absolute_error(ctx.y_test, preds))
-            mape = None
-            try:
-                denom = np.where(np.abs(np.asarray(ctx.y_test)) < 1e-9, np.nan, np.asarray(ctx.y_test))
-                mape = float(np.nanmean(np.abs((np.asarray(ctx.y_test) - np.asarray(preds)) / denom)) * 100)
-            except Exception:
-                mape = None
-            lb[0]["rmse"] = round(rmse, 6)
-            lb[0]["mae"] = round(mae, 6)
-            lb[0]["mape"] = round(mape, 4) if mape is not None and np.isfinite(mape) else None
+        metric_details = (
+            self._classification_metric_bundle(ctx, preds)
+            if ctx.is_classification
+            else self._regression_metric_bundle(ctx, preds)
+        )
+        lb[0].update(metric_details)
 
         winner_debug = next(
             (r for r in ctx.tested_models if r["model"] == ctx.winner_pool_name), None
@@ -974,16 +1143,13 @@ class EvaluationComponent(PipelineComponent):
             winner_debug["phase"] = "holdout_test"
             winner_debug["holdout_score"] = final_sc
             winner_debug["winner"] = True
-            if ctx.is_classification:
-                winner_debug["precision"] = lb[0].get("precision")
-                winner_debug["recall"] = lb[0].get("recall")
-                winner_debug["f1"] = lb[0].get("f1")
-            else:
-                winner_debug["mse"] = lb[0].get("mse")
-                winner_debug["mae"] = lb[0].get("mae")
+            for key, value in metric_details.items():
+                winner_debug[key] = value
 
         ctx.leaderboard = lb
-        warnings_payload = self._build_warning_payload(ctx, cv_mean=cv_mean, cv_std=cv_std, holdout_score=float(holdout_score))
+        warnings_payload = self._build_warning_payload(
+            ctx, cv_mean=cv_mean, cv_std=cv_std, holdout_score=float(holdout_score)
+        )
 
         schema_hash = None
         schema_snapshot = {}
@@ -995,8 +1161,10 @@ class EvaluationComponent(PipelineComponent):
         except Exception:
             schema_snapshot = {}
 
-        with get_db() as db:
-            dataset_row = db.query(DatasetModel).filter(DatasetModel.id == ctx.dataset_id).first()
+        with db_session() as db:
+            dataset_row = (
+                db.query(DatasetModel).filter(DatasetModel.id == ctx.dataset_id).first()
+            )
 
         reproducibility = {
             "job_id": ctx.job_id,
@@ -1005,11 +1173,15 @@ class EvaluationComponent(PipelineComponent):
             "dataset_source_type": dataset_row.source_type if dataset_row else None,
             "schema_hash": schema_hash,
             "selected_features": list(ctx.config.get("selected_features") or []),
-            "selected_feature_count": len(ctx.config.get("selected_features") or []) or len(ctx.num_cols + ctx.cat_cols),
+            "selected_feature_count": len(ctx.config.get("selected_features") or [])
+            or len(ctx.num_cols + ctx.cat_cols),
             "auto_clean": bool(ctx.config.get("auto_clean", True)),
             "handle_imbalance": bool(ctx.config.get("handle_imbalance", False)),
             "cv_folds_used": int(ctx.config.get("cv_folds", 0) or 5),
-            "eval_metric_requested": ctx.config.get("eval_metric") or ("Accuracy" if ctx.is_classification else "R²"),
+            "pca_mode": ctx.config.get("pca_mode", "auto"),
+            "pca_components_requested": int(ctx.config.get("pca_components", 0) or 0),
+            "eval_metric_requested": ctx.config.get("eval_metric")
+            or ("Accuracy" if ctx.is_classification else "R²"),
             "train_test_split_random_state": 42,
             "stability_seeds": [42, 123, 999],
             "schema_column_count": len((schema_snapshot.get("schema") or {}).keys()),
@@ -1020,6 +1192,8 @@ class EvaluationComponent(PipelineComponent):
             "task_type": "classification" if ctx.is_classification else "regression",
             "eval_metric_requested": ctx.config.get("eval_metric")
             or ("Accuracy" if ctx.is_classification else "R²"),
+            "pca_mode": ctx.config.get("pca_mode", "auto"),
+            "pca_components_requested": int(ctx.config.get("pca_components", 0) or 0),
             "cv_folds_used": int(ctx.config.get("cv_folds", 0) or 5),
             "preprocessor": (
                 "full_column_transformer"
@@ -1049,7 +1223,7 @@ class EvaluationComponent(PipelineComponent):
 
         ctx.metrics = {
             "best_model": ctx.winner_pool_name,
-            "metric_name": ("CV Accuracy" if ctx.is_classification else "CV R² Score"),
+            "metric_name": self._primary_metric_label(ctx),
             "score": final_sc,
             "cv_mean": round(cv_mean * 100, 2),
             "cv_std": round(cv_std * 100, 2),
@@ -1057,6 +1231,9 @@ class EvaluationComponent(PipelineComponent):
             "holdout_score": round(float(holdout_score) * 100, 2),
             "leaderboard": lb,
             "is_classification": ctx.is_classification,
+            "performance_metrics": self._performance_metrics_payload(
+                ctx, scoring_name, metric_details
+            ),
             "shap_summary": shap_summary,
             "permutation_importance": permutation_summary,
             "model_path": get_model_path(ctx.job_id),
@@ -1075,7 +1252,9 @@ class EvaluationComponent(PipelineComponent):
             "reproducibility_snapshot": reproducibility,
             "dataset_lineage_snapshot": {
                 "dataset_id": ctx.dataset_id,
-                "parent_dataset_id": dataset_row.parent_dataset_id if dataset_row else None,
+                "parent_dataset_id": (
+                    dataset_row.parent_dataset_id if dataset_row else None
+                ),
                 "source_type": dataset_row.source_type if dataset_row else None,
             },
         }

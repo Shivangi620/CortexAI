@@ -15,7 +15,7 @@ from enum import Enum
 import pandas as pd
 from typing import Dict, Any
 
-from infra.database import get_db, JobModel, DatasetModel
+from infra.database import get_db, db_session, JobModel, DatasetModel
 from services.training.trainer import train_automl
 
 
@@ -49,7 +49,7 @@ class PipelineEngine:
         self.log(f"Status update: {step.value}")
 
         try:
-            with get_db() as db:
+            with db_session() as db:
                 job = db.query(JobModel).filter(JobModel.id == self.job_id).first()
                 if job:
                     if step == PipelineStep.COMPLETE:
@@ -94,7 +94,7 @@ class PipelineEngine:
             # ── STEP 2: PROFILE ─────────────────────────────
             self.update_status(PipelineStep.PROFILE)
 
-            with get_db() as db:
+            with db_session() as db:
                 dataset = db.query(DatasetModel).filter(DatasetModel.id == self.dataset_id).first()
 
                 try:

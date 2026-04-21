@@ -27,11 +27,11 @@ def _resolve_scoring(eval_metric: str, is_clf: bool) -> str:
     return "r2"
 
 
-def stability_check(model, X, y, is_clf, seeds=(42, 123, 999)):
+def stability_check(model, X, y, is_clf, seeds=(42, 123, 999), scoring_name: str = ""):
     """Re-fit with multiple seeds; returns mean primary metric + optional detail metrics."""
     scores = []
-    precs, recs, f1s = [], [], []
-    mses, maes = [], []
+    accs, precs, recs, f1s, roc_aucs = [], [], [], [], []
+    r2s, mses, rmses, maes = [], [], [], []
     y_series = pd.Series(y)
     unique_classes = int(y_series.nunique()) if is_clf else 0
     for seed in seeds:
@@ -60,32 +60,76 @@ def stability_check(model, X, y, is_clf, seeds=(42, 123, 999)):
         model.fit(X_tr_in, y_tr)
         pred = model.predict(X_val_in)
         if is_clf:
-            scores.append(accuracy_score(y_val, pred))
-            precs.append(
-                precision_score(y_val, pred, average="weighted", zero_division=0)
+            accuracy = accuracy_score(y_val, pred)
+            precision = precision_score(
+                y_val, pred, average="weighted", zero_division=0
             )
-            recs.append(
-                recall_score(y_val, pred, average="weighted", zero_division=0)
-            )
-            f1s.append(
-                f1_score(y_val, pred, average="weighted", zero_division=0)
-            )
+            recall = recall_score(y_val, pred, average="weighted", zero_division=0)
+            f1 = f1_score(y_val, pred, average="weighted", zero_division=0)
+            roc_auc = None
+            try:
+                if hasattr(model, "predict_proba"):
+                    probs = model.predict_proba(X_val_in)
+                    if probs.shape[1] == 2:
+                        roc_auc = roc_auc_score(y_val, probs[:, 1])
+                    else:
+                        roc_auc = roc_auc_score(
+                            y_val, probs, multi_class="ovr", average="weighted"
+                        )
+            except Exception:
+                roc_auc = None
+
+            accs.append(float(accuracy))
+            precs.append(float(precision))
+            recs.append(float(recall))
+            f1s.append(float(f1))
+            if roc_auc is not None:
+                roc_aucs.append(float(roc_auc))
+
+            if scoring_name == "f1_weighted":
+                scores.append(float(f1))
+            elif scoring_name == "precision_weighted":
+                scores.append(float(precision))
+            elif scoring_name == "recall_weighted":
+                scores.append(float(recall))
+            else:
+                scores.append(float(accuracy))
         else:
-            scores.append(r2_score(y_val, pred))
-            mses.append(mean_squared_error(y_val, pred))
-            maes.append(mean_absolute_error(y_val, pred))
+            r2 = r2_score(y_val, pred)
+            mse = mean_squared_error(y_val, pred)
+            mae = mean_absolute_error(y_val, pred)
+            rmse = float(np.sqrt(mse))
+
+            r2s.append(float(r2))
+            mses.append(float(mse))
+            rmses.append(float(rmse))
+            maes.append(float(mae))
+
+            if scoring_name == "neg_mean_absolute_error":
+                scores.append(-float(mae))
+            elif scoring_name == "neg_mean_squared_error":
+                scores.append(-float(mse))
+            elif scoring_name == "neg_root_mean_squared_error":
+                scores.append(-float(rmse))
+            else:
+                scores.append(float(r2))
     mean_score = float(np.mean(scores))
     std_score = float(np.std(scores))
     extras = {}
-    if is_clf and precs:
+    if is_clf and accs:
         extras = {
+            "accuracy": round(float(np.mean(accs)) * 100, 1),
             "precision": round(float(np.mean(precs)) * 100, 1),
             "recall": round(float(np.mean(recs)) * 100, 1),
             "f1": round(float(np.mean(f1s)) * 100, 1),
         }
+        if roc_aucs:
+            extras["roc_auc"] = round(float(np.mean(roc_aucs)) * 100, 1)
     elif not is_clf and mses:
         extras = {
+            "r2": round(float(np.mean(r2s)), 6),
             "mse": round(float(np.mean(mses)), 6),
+            "rmse": round(float(np.mean(rmses)), 6),
             "mae": round(float(np.mean(maes)), 6),
         }
     return mean_score, std_score, extras

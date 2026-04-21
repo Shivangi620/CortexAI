@@ -1,9 +1,24 @@
 import pandas as pd
 import numpy as np
-from services.training.preprocessing import auto_clean_data, fuzzy_merge_labels
+import json
+import joblib
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from services.training.preprocessing import (
+    auto_clean_data,
+    fuzzy_merge_labels,
+    make_lite_preprocessor,
+    make_preprocessor,
+)
 from services.drift_service import get_drift_dashboard
 from services.training.forecasting import estimate_training_forecast
+from services.training.evaluator import _resolve_scoring, stability_check
+from services.training.components import _coerce_estimator_instance, _resolve_final_model_choice
+from services.training.components import _resolve_target_column_name
+from services.explain_service import generate_counterfactual
+from infra.database import DatasetModel, JobModel
+from infra.storage import get_model_path
 from core.file_loader import load_dataframe
+from .conftest import TestingSessionLocal
 
 
 def test_fuzzy_merge_labels():
@@ -148,3 +163,233 @@ def test_training_forecast_returns_runtime_and_budget():
     assert forecast["estimated_duration_seconds"]["max"] >= forecast["estimated_duration_seconds"]["min"]
     assert forecast["optuna_trials"] == 32
     assert forecast["estimated_feature_count"] == 3
+
+
+def test_classification_scoring_supports_accuracy_precision_recall():
+    assert _resolve_scoring("Accuracy", True) == "accuracy"
+    assert _resolve_scoring("Precision", True) == "precision_weighted"
+    assert _resolve_scoring("Recall", True) == "recall_weighted"
+    assert _resolve_scoring("F1-score", True) == "f1_weighted"
+
+
+def test_stability_check_uses_requested_classification_metric_and_returns_all_metrics():
+    X = pd.DataFrame(
+        {
+            "x1": [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+            "x2": [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1],
+        }
+    )
+    y = pd.Series([0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1])
+
+    score, std_score, extras = stability_check(
+        LogisticRegression(max_iter=1000),
+        X,
+        y,
+        True,
+        scoring_name="precision_weighted",
+    )
+
+    assert 0 <= score <= 1
+    assert std_score >= 0
+    assert {"accuracy", "precision", "recall", "f1"} <= set(extras.keys())
+
+
+def test_stability_check_uses_requested_regression_metric_and_returns_all_metrics():
+    X = pd.DataFrame({"x1": np.arange(20), "x2": np.arange(20) * 2})
+    y = pd.Series(np.arange(20) * 3 + 5)
+
+    score, std_score, extras = stability_check(
+        LinearRegression(),
+        X,
+        y,
+        False,
+        scoring_name="neg_mean_squared_error",
+    )
+
+    assert score <= 0
+    assert std_score >= 0
+    assert {"r2", "mse", "rmse", "mae"} <= set(extras.keys())
+
+
+def test_generate_counterfactual_accepts_target_prediction_for_classification(tmp_path):
+    csv_path = tmp_path / "counterfactual_classification.csv"
+    csv_path.write_text("x1,target\n0,no\n0,no\n1,yes\n1,yes\n", encoding="utf-8")
+
+    model = LogisticRegression().fit(pd.DataFrame({"x1": [0, 0, 1, 1]}), [0, 0, 1, 1])
+    model_path = get_model_path("cf-service-job")
+    joblib.dump(model, model_path)
+
+    with TestingSessionLocal() as db:
+        db.add(
+            DatasetModel(
+                id="cf-service-ds",
+                file_path=str(csv_path),
+                profile_json=json.dumps({"columns": ["x1", "target"]}),
+                source_type="upload",
+            )
+        )
+        db.add(
+            JobModel(
+                id="cf-service-job",
+                dataset_id="cf-service-ds",
+                status="completed",
+                model_path=model_path,
+                results_json=json.dumps(
+                    {
+                        "feature_names": ["x1"],
+                        "is_classification": True,
+                        "model_path": model_path,
+                    }
+                ),
+            )
+        )
+        db.commit()
+
+    payload = generate_counterfactual(
+        "cf-service-job",
+        {"feature_names": ["x1"], "is_classification": True, "model_path": model_path},
+        {"x1": 0},
+        target_prediction=95,
+    )
+
+    assert "error" not in payload
+    assert payload["current_prediction"] in {"0", "1"}
+    assert "suggestions" in payload
+
+
+def test_generate_counterfactual_supports_regression_goal_seeking(tmp_path):
+    csv_path = tmp_path / "counterfactual_regression.csv"
+    csv_path.write_text("x1,target\n0,0\n1,10\n2,20\n3,30\n", encoding="utf-8")
+
+    model = LinearRegression().fit(pd.DataFrame({"x1": [0, 1, 2, 3]}), [0, 10, 20, 30])
+    model_path = get_model_path("reg-cf-service-job")
+    joblib.dump(model, model_path)
+
+    with TestingSessionLocal() as db:
+        db.add(
+            DatasetModel(
+                id="reg-cf-service-ds",
+                file_path=str(csv_path),
+                profile_json=json.dumps({"columns": ["x1", "target"]}),
+                source_type="upload",
+            )
+        )
+        db.add(
+            JobModel(
+                id="reg-cf-service-job",
+                dataset_id="reg-cf-service-ds",
+                status="completed",
+                model_path=model_path,
+                results_json=json.dumps(
+                    {
+                        "feature_names": ["x1"],
+                        "is_classification": False,
+                        "model_path": model_path,
+                    }
+                ),
+            )
+        )
+        db.commit()
+
+    payload = generate_counterfactual(
+        "reg-cf-service-job",
+        {"feature_names": ["x1"], "is_classification": False, "model_path": model_path},
+        {"x1": 0},
+        target_prediction=25,
+    )
+
+    assert "error" not in payload
+    assert payload["current_prediction"] == 0.0
+    assert payload["target_prediction"] == 25.0
+    assert isinstance(payload["suggestions"], list)
+
+
+def test_preprocessor_respects_explicit_pca_controls():
+    num_cols = [f"n{i}" for i in range(12)]
+    full_pre = make_preprocessor(num_cols, [], pca_mode="always", pca_components=5)
+    lite_pre = make_lite_preprocessor(num_cols, [], pca_mode="always", pca_components=4)
+    off_pre = make_preprocessor(num_cols, [], pca_mode="off", pca_components=5)
+
+    full_num_steps = full_pre.transformers[0][1].named_steps
+    lite_num_steps = lite_pre.transformers[0][1].named_steps
+    off_num_steps = off_pre.transformers[0][1].named_steps
+
+    assert "pca" in full_num_steps
+    assert full_num_steps["pca"].n_components == 5
+    assert "pca" in lite_num_steps
+    assert lite_num_steps["pca"].n_components == 4
+    assert "pca" not in off_num_steps
+
+
+def test_training_forecast_includes_pca_configuration_notes():
+    forecast = estimate_training_forecast(
+        profile={
+            "rows": 3000,
+            "cols": 48,
+            "columns": [f"f{i}" for i in range(48)],
+            "task_type": "classification",
+            "missing_pct": 3.2,
+        },
+        target_column="target",
+        goal="Performance",
+        mode="Balanced",
+        selected_features=[],
+        cv_folds=3,
+        handle_imbalance=False,
+        auto_clean=True,
+        eval_metric="Precision",
+        pca_mode="always",
+        pca_components=10,
+    )
+
+    assert forecast["pca_mode"] == "always"
+    assert forecast["pca_components"] == 10
+    assert any("PCA" in note for note in forecast["notes"])
+
+
+def test_training_component_keeps_optimized_model_when_present():
+    optimized_model = object()
+    fallback_model = object()
+
+    final_model, winner_name = _resolve_final_model_choice(
+        optimized_model,
+        "LightGBM",
+        [{"model": fallback_model, "name": "Random Forest"}],
+    )
+
+    assert final_model is optimized_model
+    assert winner_name == "LightGBM"
+
+
+def test_training_component_falls_back_to_top_candidate_when_missing():
+    fallback_model = object()
+
+    final_model, winner_name = _resolve_final_model_choice(
+        None,
+        None,
+        [{"model": fallback_model, "name": "Random Forest"}],
+    )
+
+    assert final_model is fallback_model
+    assert winner_name == "Random Forest"
+
+
+def test_training_component_coerces_string_estimator_name_back_to_model_pool():
+    fallback_model = object()
+    recovered = _coerce_estimator_instance(
+        "Random Forest",
+        "Random Forest",
+        {"Random Forest": fallback_model},
+        [{"model": fallback_model, "name": "Random Forest"}],
+    )
+
+    assert recovered is fallback_model
+
+
+def test_target_resolution_matches_case_and_separator_variants():
+    resolved = _resolve_target_column_name(
+        ["customer_id", "Target Value", "prediction_score"],
+        "TargetValue",
+    )
+
+    assert resolved == "Target Value"

@@ -5,6 +5,7 @@ from ui_shell import (
     API_URL,
     ensure_session_state,
     load_css,
+    render_focus_strip,
     render_page_shell,
     render_safe_dataframe,
     render_section_intro,
@@ -49,6 +50,13 @@ render_section_intro(
     "Shift Detection",
     "This page pairs detection, cadence management, history, and retraining so drift handling stays operational instead of fragmented.",
     "Upload a fresh batch for analysis, save review cadence, then promote drifted data into a retraining job when needed.",
+)
+render_focus_strip(
+    [
+        ("Data Quality", "Preprocessing choices affect drift sensitivity and retraining stability."),
+        ("Evaluation Discipline", "A saved baseline makes train-test and production comparisons meaningful."),
+        ("Model Health", "Feature engineering and interpretability are easier to trust when drift is monitored continuously."),
+    ]
 )
 
 if dataset_id:

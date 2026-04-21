@@ -19,14 +19,14 @@ def get_drift_dashboard(
     critical_threshold: float | None = None,
 ) -> Dict[str, Any]:
     from core.drift_detector import DriftDetector
-    from datetime import datetime
+    from datetime import datetime, UTC
     from infra.config import settings
 
     feature_drift: List[Dict[str, Any]] = []
     drifted_features: List[str] = []
     critical_features: List[str] = []
 
-    timestamp = timestamp or datetime.utcnow().isoformat()
+    timestamp = timestamp or datetime.now(UTC).isoformat()
 
     try:
         cols_to_check = [c for c in current_df.columns if c in (baseline_stats or {})]
@@ -66,27 +66,32 @@ def get_drift_dashboard(
         }
 
         if is_numeric:
-            try:
-                entry["current_mean"] = round(float(current_series.mean()), 4)
-                entry["baseline_mean"] = round(float(col_stats.get("mean", current_series.mean())), 4)
-                entry["current_std"] = round(float(current_series.std()), 4)
-                entry["baseline_std"] = round(float(col_stats.get("std", current_series.std())), 4)
-            except Exception:
-                pass
-
-            b_mean = col_stats.get("mean", current_series.mean())
-            b_std = col_stats.get("std", current_series.std()) or 1
-            b_count = int(col_stats.get("count", 100) or 100)
-
-            try:
+            # Reconstruct or load baseline values
+            if isinstance(col_stats, list) and len(col_stats) > 0:
+                baseline_vals = np.array(col_stats)
+                b_mean = float(baseline_vals.mean())
+                b_std = float(baseline_vals.std())
+                b_count = len(col_stats)
+            elif isinstance(col_stats, dict):
+                b_mean = col_stats.get("mean", current_series.mean())
+                b_std = col_stats.get("std", current_series.std()) or 1
+                b_count = int(col_stats.get("count", 100) or 100)
                 np.random.seed(42)
-                baseline_approx = pd.Series(np.random.normal(b_mean, b_std, b_count))
-            except Exception:
-                baseline_approx = current_series
+                baseline_vals = np.random.normal(b_mean, b_std, b_count)
+            else:
+                baseline_vals = current_series.values
+                b_mean = float(current_series.mean())
+                b_std = float(current_series.std())
+                b_count = len(current_series)
+
+            entry["current_mean"] = round(float(current_series.mean()), 4)
+            entry["baseline_mean"] = round(float(b_mean), 4)
+            entry["current_std"] = round(float(current_series.std()), 4)
+            entry["baseline_std"] = round(float(b_std), 4)
 
             try:
                 drifted, p_val = DriftDetector.compute_ks_drift(
-                    baseline_approx.values, current_series.values
+                    baseline_vals, current_series.values
                 )
                 entry["ks_p_value"] = round(float(p_val), 4)
             except Exception:
@@ -94,7 +99,7 @@ def get_drift_dashboard(
 
             try:
                 psi = DriftDetector.compute_psi(
-                    baseline_approx.values, current_series.values
+                    baseline_vals, current_series.values
                 )
                 entry["psi"] = round(float(psi), 4)
             except Exception:

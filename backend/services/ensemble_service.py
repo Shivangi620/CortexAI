@@ -15,6 +15,7 @@ def build_ensemble(
     job_ids: List[str],
     strategy: str = "voting",
     dataset_id: Optional[str] = None,
+    
 ) -> Dict[str, Any]:
     import joblib
     from sklearn.ensemble import VotingClassifier, VotingRegressor
@@ -22,7 +23,7 @@ def build_ensemble(
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score, r2_score
 
-    from infra.database import get_db, JobModel, DatasetModel
+    from infra.database import get_db, db_session, JobModel, DatasetModel
     from infra.storage import resolve_model_path
     from core.file_loader import load_dataframe
 
@@ -38,7 +39,7 @@ def build_ensemble(
     test_df = None
     reference_dataset_id = dataset_id
 
-    with get_db() as db:
+    with db_session() as db:
         for jid in job_ids:
             try:
                 job = db.query(JobModel).filter(JobModel.id == jid).first()
@@ -202,7 +203,7 @@ def build_ensemble(
     ensemble_id = str(uuid4())
 
     try:
-        from infra.database import JobModel, get_db
+        from infra.database import JobModel, get_db, db_session
         from infra.storage import ModelRegistry, get_model_path, save_metrics
         from core.integrations import MLTracking
 
@@ -260,7 +261,7 @@ def build_ensemble(
         pass
 
     try:
-        with get_db() as db:
+        with db_session() as db:
             db.add(
                 JobModel(
                     id=ensemble_id,
@@ -270,6 +271,7 @@ def build_ensemble(
                     results_json=json.dumps(results),
                     model_path=ensemble_path,
                     story=f"Ensemble built using {strategy} from {len(job_ids)} source models.",
+                    
                     params_json=json.dumps(
                         {
                             "job_ids": job_ids,

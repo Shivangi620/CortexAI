@@ -1,4 +1,5 @@
 """api/routes/misc.py — Chat, recommendations, resume, export, zeroshot, meta."""
+
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -6,7 +7,7 @@ from typing import List
 import json
 import os
 
-from infra.database import get_db, DatasetModel, JobModel
+from infra.database import get_db, db_session, DatasetModel, JobModel
 from infra.result_contract import normalize_results
 from services.studio_service import narrate_experiment, synthetic_data_judge
 
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/api", tags=["misc"])
 
 # ── Chat ───────────────────────────────────────────────────────────────────────
 
+
 class ChatRequest(BaseModel):
     job_id: str
     prompt: str
@@ -22,13 +24,17 @@ class ChatRequest(BaseModel):
 
 @router.post("/chat")
 def chat_endpoint(req: ChatRequest):
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == req.job_id).first()
         if not job:
-            return {"error": "Job not found"}
+            raise HTTPException(status_code=404, detail="Job not found")
 
         try:
-            results = normalize_results(json.loads(job.results_json)) if job.results_json else None
+            results = (
+                normalize_results(json.loads(job.results_json))
+                if job.results_json
+                else None
+            )
         except Exception:
             results = None
 
@@ -38,10 +44,12 @@ def chat_endpoint(req: ChatRequest):
         }
 
     from core.insights import chat_with_model
+
     return {"response": chat_with_model(req.prompt, context)}
 
 
 # ── NL→ML intent parser ────────────────────────────────────────────────────────
+
 
 class NLIntentRequest(BaseModel):
     prompt: str
@@ -54,8 +62,10 @@ def parse_nl_intent(req: NLIntentRequest):
 
     profile = {}
     if req.dataset_id:
-        with get_db() as db:
-            ds = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
+        with db_session() as db:
+            ds = (
+                db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
+            )
             if ds:
                 try:
                     profile = json.loads(ds.profile_json)
@@ -67,17 +77,26 @@ def parse_nl_intent(req: NLIntentRequest):
 
 # ── Recommendations ────────────────────────────────────────────────────────────
 
+
 @router.get("/recommend/{job_id}")
 def get_recommendations(job_id: str):
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if not job or not job.results_json:
-            return {"error": "Job not found or not completed"}
+            raise HTTPException(
+                status_code=404, detail="Job not found or not completed"
+            )
 
-        dataset = db.query(DatasetModel).filter(DatasetModel.id == job.dataset_id).first()
+        dataset = (
+            db.query(DatasetModel).filter(DatasetModel.id == job.dataset_id).first()
+        )
 
         try:
-            profile = json.loads(dataset.profile_json) if dataset and dataset.profile_json else {}
+            profile = (
+                json.loads(dataset.profile_json)
+                if dataset and dataset.profile_json
+                else {}
+            )
         except Exception:
             profile = {}
 
@@ -87,19 +106,23 @@ def get_recommendations(job_id: str):
             results = {}
 
     from core.recommendations import generate_recommendations
+
     return {"recommendations": generate_recommendations(profile, results)}
 
 
 # ── Export ─────────────────────────────────────────────────────────────────────
 
+
 @router.get("/export/{job_id}")
 def export_model(job_id: str):
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
         if job.status != "completed":
-            raise HTTPException(status_code=409, detail=f"Job not completed (status: {job.status})")
+            raise HTTPException(
+                status_code=409, detail=f"Job not completed (status: {job.status})"
+            )
         if not job.results_json:
             raise HTTPException(status_code=400, detail="No results available")
 
@@ -117,23 +140,39 @@ def export_model(job_id: str):
     if not export_path or not isinstance(export_path, str):
         raise HTTPException(status_code=500, detail="Export failed")
 
-    return FileResponse(path=export_path, filename="automl_export.zip", media_type="application/zip")
+    return FileResponse(
+        path=export_path, filename="automl_export.zip", media_type="application/zip"
+    )
 
 
 # ── Synthetic Data ─────────────────────────────────────────────────────────────
 
+
 @router.post("/synthetic/{dataset_id}")
 def synthetic_expand(dataset_id: str, n_rows: int = None):
+    """
+    Generate synthetic data by expanding the dataset with statistically similar rows.
+
+    Query parameters:
+    - n_rows (optional): Number of synthetic rows to generate. If not provided, auto-calculates.
+
+    Returns:
+    - new_dataset_id: ID of the synthetic dataset
+    - original_rows: Number of original rows
+    - synthetic_rows_added: Number of synthetic rows added
+    - total_rows: Total rows in expanded dataset
+    - preview: First 5 synthetic rows
+    """
     import pandas as pd
     from uuid import uuid4
     from core.synthetic import generate_synthetic, suggest_expansion_size
     from core.data_profiler import profile_dataset
     from core.file_loader import load_dataframe
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
-            return {"error": "Dataset not found"}
+            raise HTTPException(status_code=404, detail="Dataset not found")
 
         file_path = dataset.file_path
 
@@ -150,17 +189,27 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
         return {"error": f"Failed to load dataset: {e}"}
 
     original_rows = len(df)
+
+    # Validate and convert n_rows parameter
+    try:
+        requested_n = int(n_rows) if n_rows else None
+    except (ValueError, TypeError):
+        requested_n = None
+
     recommended_n = suggest_expansion_size(original_rows)
-    requested_n = int(n_rows or recommended_n)
-    n_new = max(1, requested_n)
+    n_new = max(1, requested_n or recommended_n)
+
     adjustment_note = None
-    if requested_n > recommended_n * 4:
+    if requested_n and requested_n > recommended_n * 4:
         adjustment_note = (
             f"Requested {requested_n} rows. This is much larger than the recommended "
-            f"{recommended_n} rows, so validate the augmented dataset carefully before retraining."
+            f"{recommended_n} rows. Validate the augmented dataset carefully before retraining."
         )
 
-    expanded_df, synthetic_only = generate_synthetic(df, n_new)
+    try:
+        expanded_df, synthetic_only = generate_synthetic(df, n_new)
+    except (ValueError, Exception) as e:
+        return {"error": f"Failed to generate synthetic data: {str(e)}"}
 
     new_id = str(uuid4())
     new_path = f"tmp/{new_id}.csv"
@@ -174,22 +223,21 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
         new_profile = profile_dataset(expanded_df)
     except Exception:
         new_profile = profile.copy()
-        new_profile.update({
-            "rows": len(expanded_df),
-            "columns": list(expanded_df.columns),
-        })
+        new_profile.update(
+            {
+                "rows": len(expanded_df),
+                "columns": list(expanded_df.columns),
+            }
+        )
 
-    new_profile.update({
-        "synthetic_added": n_new,
-        "original_rows": original_rows
-    })
+    new_profile.update({"synthetic_added": n_new, "original_rows": original_rows})
 
     try:
         profile_json = json.dumps(new_profile)
     except Exception:
         profile_json = json.dumps({})
 
-    with get_db() as db:
+    with db_session() as db:
         db.add(
             DatasetModel(
                 id=new_id,
@@ -216,9 +264,9 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
         "original_rows": original_rows,
         "recommended_rows": recommended_n,
         "requested_rows": requested_n,
-        "synthetic_rows_added": n_new,
+        "synthetic_rows_added": len(synthetic_only),
         "total_rows": len(expanded_df),
-        "augmentation_ratio": round(n_new / max(original_rows, 1), 2),
+        "augmentation_ratio": round(len(synthetic_only) / max(original_rows, 1), 2),
         "adjustment_note": adjustment_note,
         "original_profile": profile,
         "profile": new_profile,
@@ -229,6 +277,10 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
 
 @router.get("/synthetic/judge/{dataset_id}")
 def synthetic_judge(dataset_id: str):
+    with db_session() as db:
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+    if not dataset:
+        return {"error": "Dataset not found"}
     return synthetic_data_judge(dataset_id)
 
 
@@ -244,8 +296,10 @@ class PlaygroundRequest(BaseModel):
 
 @router.post("/quicktrain")
 def playground_train(req: PlaygroundRequest):
-    with get_db() as db:
-        dataset = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
+    with db_session() as db:
+        dataset = (
+            db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
+        )
         if not dataset:
             return {"error": "Dataset not found"}
 
@@ -257,21 +311,28 @@ def playground_train(req: PlaygroundRequest):
     try:
         df = load_dataframe(filepath=file_path)
         if df is None or df.empty:
-            return {"error": "Dataset is empty or unreadable"}
+            raise HTTPException(
+                status_code=422, detail="Dataset is empty or unreadable"
+            )
     except Exception as e:
-        return {"error": f"Could not reload dataset: {e}"}
+        raise HTTPException(
+            status_code=422, detail=f"Could not reload dataset: {e}"
+        ) from e
 
-    return quick_train(df, req.target_column, req.selected_features, req.selected_models)
+    return quick_train(
+        df, req.target_column, req.selected_features, req.selected_models
+    )
 
 
 # ── Zero-Shot + Meta ───────────────────────────────────────────────────────────
 
+
 @router.get("/zeroshot/{dataset_id}")
 def zero_shot(dataset_id: str):
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
-            return {"error": "Dataset not found"}
+            raise HTTPException(status_code=404, detail="Dataset not found")
 
         try:
             profile = json.loads(dataset.profile_json)
@@ -279,15 +340,16 @@ def zero_shot(dataset_id: str):
             profile = {}
 
     from core.meta_learning import zero_shot_recommend
+
     return zero_shot_recommend(profile)
 
 
 @router.get("/meta/insights/{dataset_id}")
 def cross_dataset_insights(dataset_id: str):
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
-            return {"error": "Dataset not found"}
+            raise HTTPException(status_code=404, detail="Dataset not found")
 
         try:
             profile = json.loads(dataset.profile_json)
@@ -295,38 +357,56 @@ def cross_dataset_insights(dataset_id: str):
             profile = {}
 
     from core.meta_learning import get_cross_dataset_insights
+
     return get_cross_dataset_insights(profile)
 
 
 @router.get("/meta/status")
 def meta_status():
-    from core.meta_learning import meta_engine
+    try:
+        from core.meta_learning import meta_engine
 
-    return {
-        "is_trained": bool(meta_engine.is_trained),
-        "min_records": meta_engine.min_records,
-        "validation_error": round(float(meta_engine.val_error), 4),
-        "backend": "lightgbm" if meta_engine.model is not None else "heuristics",
-    }
+        return {
+            "is_trained": bool(meta_engine.is_trained),
+            "min_records": meta_engine.min_records,
+            "validation_error": round(float(meta_engine.val_error), 4),
+            "backend": "lightgbm" if meta_engine.model is not None else "heuristics",
+        }
+    except Exception as exc:
+        return {
+            "is_trained": False,
+            "min_records": 0,
+            "validation_error": None,
+            "backend": "heuristics",
+            "warning": str(exc),
+        }
 
 
 @router.get("/narrate/{job_id}")
 def narrate_job(job_id: str):
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if not job:
-            return {"error": "Job not found"}
+            raise HTTPException(status_code=404, detail="Job not found")
         dataset_id = job.dataset_id
         story = job.story
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
 
         try:
-            profile = json.loads(dataset.profile_json) if dataset and dataset.profile_json else {}
+            profile = (
+                json.loads(dataset.profile_json)
+                if dataset and dataset.profile_json
+                else {}
+            )
         except Exception:
             profile = {}
 
         try:
-            results = normalize_results(json.loads(job.results_json)) if job.results_json else {}
+            results = (
+                normalize_results(json.loads(job.results_json))
+                if job.results_json
+                else {}
+            )
         except Exception:
             results = {}
 

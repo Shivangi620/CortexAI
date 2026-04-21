@@ -7,6 +7,7 @@ from ui_shell import (
     fetch_backend_overview,
     load_css,
     render_backend_notice,
+    render_focus_strip,
     render_page_shell,
     render_workspace_banner,
 )
@@ -50,6 +51,15 @@ st.markdown(
     </div>
     """,
     unsafe_allow_html=True,
+)
+
+render_focus_strip(
+    [
+        ("Core Track", "Supervised, unsupervised, and reinforcement learning built into the app narrative."),
+        ("Algorithm Deck", "Linear models, trees, forests, SVM, KNN, and PCA are highlighted across training pages."),
+        ("Evaluation", "Classification and regression metrics stay visible from training to results."),
+        ("Prep Layer", "Normalization, standardization, imputation, and encoding are surfaced before model launch."),
+    ]
 )
 
 notifications_payload = api_json("/notifications", timeout=5)
@@ -161,29 +171,3 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown("### Next-Level Features", unsafe_allow_html=True)
-st.markdown(
-    """
-    <div class="ideas-grid">
-        <div class="idea-card">
-            <span class="idea-card__eyebrow">Feature Idea</span>
-            <div class="idea-card__title">Scenario Simulator</div>
-            <div class="idea-card__copy">Let users tweak a few feature values with sliders and watch predicted outcomes, SHAP shifts, and confidence move in real time.</div>
-            <div class="idea-card__meta">Great for demos and stakeholder buy-in</div>
-        </div>
-        <div class="idea-card">
-            <span class="idea-card__eyebrow">Feature Idea</span>
-            <div class="idea-card__title">Data Anomaly Radar</div>
-            <div class="idea-card__copy">Add an always-on anomaly watch that highlights strange rows, suspicious spikes, and unstable features before training begins.</div>
-            <div class="idea-card__meta">Prevents bad runs early</div>
-        </div>
-        <div class="idea-card">
-            <span class="idea-card__eyebrow">Feature Idea</span>
-            <div class="idea-card__title">Experiment Narrator</div>
-            <div class="idea-card__copy">Auto-write a concise story of why the current winning model beat the field and what changed compared with recent runs.</div>
-            <div class="idea-card__meta">Useful for handoffs and reviews</div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)

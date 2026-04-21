@@ -92,9 +92,9 @@ class MLTracking:
 
         # Local experiment tracking DB
         try:
-            from infra.database import get_db, JobModel, ExperimentRun, DatasetModel
+            from infra.database import get_db, db_session, JobModel, ExperimentRun, DatasetModel
 
-            with get_db() as db:
+            with db_session() as db:
                 job = db.query(JobModel).filter(JobModel.id == job_id).first()
                 if job:
                     dataset = (

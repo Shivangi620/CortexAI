@@ -1,23 +1,23 @@
 #!/bin/bash
-# AutoML Studio V2 — production launcher
-# No set -e: we handle errors ourselves to avoid killing the whole script on any non-zero return
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "🚀 Starting AutoML Studio V2..."
+echo "Starting CODIN Neural Studio..."
 
 # ── Trap defined FIRST so Ctrl+C always cleans up ────────────────────────────
 CELERY_PID=""
 BACKEND_PID=""
-FRONTEND_PID=""
-
+REDIS_STARTED_BY_SCRIPT="false"
 cleanup() {
     echo ""
     echo "Stopping all services..."
     [ -n "$CELERY_PID" ]   && kill "$CELERY_PID"   2>/dev/null || true
     [ -n "$BACKEND_PID" ]  && kill "$BACKEND_PID"  2>/dev/null || true
-    [ -n "$FRONTEND_PID" ] && kill "$FRONTEND_PID" 2>/dev/null || true
+    if [[ "$REDIS_STARTED_BY_SCRIPT" == "true" ]]; then
+        redis-cli shutdown >/dev/null 2>&1 || true
+    fi
     echo "Done."
     exit 0
 }
@@ -34,8 +34,30 @@ else
     source venv/bin/activate
 fi
 
+export PYTHONPATH="$SCRIPT_DIR/backend:${PYTHONPATH:-}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
+export REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}"
+export CELERY_BROKER_URL="${CELERY_BROKER_URL:-$REDIS_URL}"
+export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-$REDIS_URL}"
+export AUTOML_SKIP_MONGO_MIGRATION="${AUTOML_SKIP_MONGO_MIGRATION:-true}"
 mkdir -p "$MPLCONFIGDIR"
+
+# ── React Frontend Build ──────────────────────────────────────────────────────
+if command -v npm >/dev/null 2>&1; then
+    if [[ ! -d "node_modules" ]]; then
+        echo "Installing frontend dependencies..."
+        if [[ -f "package-lock.json" ]]; then
+            npm ci
+        else
+            npm install
+        fi
+    fi
+    echo "Building React frontend bundle..."
+    npm run build:frontend
+else
+    echo "❌ npm is required to build the React frontend."
+    exit 1
+fi
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
 echo "Starting Redis..."
@@ -46,6 +68,7 @@ if ! redis-cli ping &>/dev/null; then
         echo "❌ Redis failed to start. Install with: sudo apt install redis-server"
         exit 1
     fi
+    REDIS_STARTED_BY_SCRIPT="true"
     echo "✅ Redis is up."
 else
     echo "✅ Redis already running."
@@ -54,20 +77,20 @@ fi
 # ── Celery Worker — must run from backend/ dir ───────────────────────────────
 echo "Starting Celery Worker..."
 cd "$SCRIPT_DIR/backend"
-celery -A core.worker worker --loglevel=warning --concurrency=2 &
+python -m celery -A core.worker.celery_app worker --loglevel=warning --concurrency=2 &
 CELERY_PID=$!
 sleep 1
-
+# streamlit
+#streamlit run ../frontend/ui/app.py --server.headless=true --server.enableCORS=false --server.runOnSave=true --port 8502
 # ── FastAPI Backend ───────────────────────────────────────────────────────────
 echo "Starting FastAPI Backend..."
-# Increase timeout and limit to handle large file uploads/processing
 python -m uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 600 &
 BACKEND_PID=$!
 
 # Wait for FastAPI to be healthy
 echo "Waiting for backend to be ready..."
 for i in {1..20}; do
-    if curl -sf http://localhost:8000/docs &>/dev/null; then
+    if curl -sf http://localhost:8000/health &>/dev/null; then
         echo "✅ Backend is up."
         break
     fi
@@ -77,17 +100,12 @@ for i in {1..20}; do
     sleep 1
 done
 
-echo "Starting Streamlit Frontend..."
-cd "$SCRIPT_DIR/frontend"
-python -m streamlit run app.py --server.port 8501 --server.headless true &
-FRONTEND_PID=$!
-cd "$SCRIPT_DIR"
-
 echo ""
 echo "================================================"
-echo "  AutoML Studio is live!"
-echo "  Frontend:  http://localhost:8501"
-echo "  API Docs:  http://localhost:8000/docs"
+echo "  CODIN Neural Studio is live!"
+echo "  Frontend + API:  http://localhost:8000"
+echo "  Studio Home:     http://localhost:8000/overview"
+echo "  API Docs:        http://localhost:8000/docs"
 echo "  Press [CTRL+C] to stop all services."
 echo "================================================"
 echo " "

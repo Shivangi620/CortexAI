@@ -1,5 +1,6 @@
 from typing import Dict, Any, Tuple
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
 from sklearn.svm import SVC
 from xgboost import XGBClassifier, XGBRegressor
@@ -25,8 +26,10 @@ class ModelSelector:
                 "allow_svm": False,
                 "preferred_order": (
                     [name for name in ["Logistic Regression", "Random Forest", "LightGBM"] if name != "LightGBM" or LGBMClassifier is not None]
+                    + ["Decision Tree"]
                     if is_clf
                     else [name for name in ["Linear Regression", "Ridge", "LightGBM"] if name != "LightGBM" or LGBMRegressor is not None]
+                    + ["Decision Tree"]
                 ),
             }
 
@@ -36,9 +39,9 @@ class ModelSelector:
                 "max_models": 4 if is_clf else 5,
                 "allow_svm": bool(is_clf and rows < 5000),
                 "preferred_order": (
-                    [name for name in ["Logistic Regression", "Random Forest", "LightGBM", "XGBoost"] if name != "LightGBM" or LGBMClassifier is not None]
+                    [name for name in ["Logistic Regression", "Decision Tree", "Random Forest", "LightGBM", "XGBoost"] if name != "LightGBM" or LGBMClassifier is not None]
                     if is_clf
-                    else [name for name in ["Linear Regression", "Ridge", "Random Forest", "LightGBM", "XGBoost"] if name != "LightGBM" or LGBMRegressor is not None]
+                    else [name for name in ["Linear Regression", "Ridge", "Decision Tree", "Random Forest", "LightGBM", "XGBoost"] if name != "LightGBM" or LGBMRegressor is not None]
                 ),
             }
 
@@ -54,6 +57,8 @@ class ModelSelector:
         """Returns 'Stage 1' parameters for rapid family evaluation."""
         if "Forest" in model_name:
             return {"n_estimators": 20, "max_depth": 5}
+        if "Decision Tree" in model_name:
+            return {"max_depth": 5, "min_samples_leaf": 2}
         if "Boosting" in model_name or "XGB" in model_name or "LGBM" in model_name or "LightGBM" in model_name:
             return {"n_estimators": 30, "max_depth": 3, "learning_rate": 0.1}
         if "SVM" in model_name:
@@ -67,6 +72,11 @@ class ModelSelector:
             return {
                 "n_estimators": trial.suggest_int("n_estimators", 50, 150),
                 "max_depth": trial.suggest_int("max_depth", 5, 12)
+            }
+        elif "Decision Tree" in model_name:
+            return {
+                "max_depth": trial.suggest_int("max_depth", 3, 16),
+                "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 8),
             }
         elif "XGB" in model_name or "LGBM" in model_name or "LightGBM" in model_name:
             return {
@@ -88,6 +98,7 @@ class ModelSelector:
         pool = {
             "Logistic Regression" if is_clf else "Linear Regression": 
                 LogisticRegression(max_iter=1000) if is_clf else LinearRegression(),
+            "Decision Tree": DecisionTreeClassifier(random_state=42) if is_clf else DecisionTreeRegressor(random_state=42),
             "Random Forest": RandomForestClassifier() if is_clf else RandomForestRegressor(),
             "XGBoost": XGBClassifier(eval_metric='logloss') if is_clf else XGBRegressor(),
         }

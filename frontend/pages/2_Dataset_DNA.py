@@ -6,6 +6,7 @@ from ui_shell import (
     API_URL,
     ensure_session_state,
     load_css,
+    render_focus_strip,
     render_page_shell,
     render_safe_dataframe,
     render_section_intro,
@@ -60,7 +61,13 @@ render_section_intro(
     "A single place to evaluate dataset quality and modeling readiness.",
     "The panel below keeps the health score, schema mix, timeline changes, column statistics, and leakage report aligned in one review flow.",
 )
-
+render_focus_strip(
+    [
+        ("Data Prep", "Check missingness, imputation needs, scaling strategy, and encoding impact."),
+        ("PCA Signal", "Dimensionality reduction belongs here when the feature space gets noisy or high-dimensional."),
+        ("Validation Readiness", "Use the DNA scan before train-test split or cross-validation decisions."),
+    ]
+)
 st.session_state.setdefault("repair_preview", {})
 
 st.markdown(

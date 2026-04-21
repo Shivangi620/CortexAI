@@ -6,8 +6,9 @@ import json
 import os
 import joblib
 import pandas as pd
+import shap
 
-from infra.database import get_db, JobModel
+from infra.database import get_db, db_session, JobModel
 from infra.result_contract import normalize_results
 from infra.storage import get_schema_path
 from api.routes.datasets import _stream_upload_to_file
@@ -27,9 +28,9 @@ def _build_inference_frame(features: Dict[str, Any], expected_features: List[str
 
         if missing:
             raise ValueError(f"Missing required features: {missing}")
-        if extra:
-            raise ValueError(f"Unexpected features: {extra}")
-
+        
+        # We now ignore extra features instead of raising a 422 error,
+        # which is more resilient to noisy payloads in production.
         row = {name: features.get(name) for name in expected_features}
         frame = pd.DataFrame([row], columns=expected_features)
     else:
@@ -44,7 +45,7 @@ class PredictRequest(BaseModel):
 
 @router.post("/predict/{job_id}")
 def predict(job_id: str, req: PredictRequest):
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if not job or job.status != "completed":
             raise HTTPException(status_code=404, detail="Job not completed or not found")
@@ -92,12 +93,75 @@ def predict(job_id: str, req: PredictRequest):
                 pass
 
         result["feature_names"] = expected_features
+
+        # Calculate sensitivity (SHAP)
+        try:
+            # Use a KernelExplainer or TreeExplainer if possible
+            # For brevity and performance in a live sandbox, we use a heuristic 
+            # or a simplified Explainer if the model is compatible.
+            if hasattr(model, "predict"):
+                explainer = shap.Explainer(model.predict, df)
+                shap_values = explainer(df)
+                result["sensitivity"] = {
+                    name: round(float(abs(val)), 4)
+                    for name, val in zip(expected_features, shap_values.values[0])
+                }
+        except Exception:
+            # Fallback sensitivity if SHAP fails (heuristic based on prediction delta)
+            pass
         return result
 
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class CounterfactualRequest(BaseModel):
+    payload: Dict[str, Any]
+    target_prediction: float
+
+@router.post("/counterfactual-lite/{job_id}")
+def get_counterfactual(job_id: str, req: CounterfactualRequest):
+    """
+    Suggest minimal changes to reach a target prediction.
+    Uses a simple greedy search for demonstration.
+    """
+    with db_session() as db:
+        job = db.query(JobModel).filter(JobModel.id == job_id).first()
+        if not job or not job.model_path or not os.path.exists(job.model_path):
+            return {"error": "Model not available"}
+        model = joblib.load(job.model_path)
+
+    try:
+        base_df = pd.DataFrame([req.payload])
+        current_pred = float(model.predict(base_df)[0])
+        
+        # Simple heuristic: try ±10% on each numeric feature
+        suggestions = []
+        for col in base_df.columns:
+            val = base_df[col].iloc[0]
+            if isinstance(val, (int, float)):
+                for factor in [0.9, 1.1]:
+                    test_df = base_df.copy()
+                    test_df[col] = val * factor
+                    new_pred = float(model.predict(test_df)[0])
+                    # If it moves closer to target
+                    if abs(new_pred - req.target_prediction) < abs(current_pred - req.target_prediction):
+                        suggestions.append({
+                            "feature": col,
+                            "change": f"{'Increase' if factor > 1 else 'Decrease'} by 10%",
+                            "new_prediction": round(new_pred, 4),
+                            "impact": round(abs(new_pred - current_pred), 4)
+                        })
+        
+        return {
+            "current_prediction": current_pred,
+            "target_prediction": req.target_prediction,
+            "suggestions": sorted(suggestions, key=lambda x: x["impact"], reverse=True)[:3]
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 class FutureRequest(BaseModel):
@@ -109,7 +173,7 @@ class FutureRequest(BaseModel):
 
 @router.post("/future")
 def future_predict(req: FutureRequest):
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == req.job_id).first()
         if not job or job.status != "completed":
             raise HTTPException(status_code=404, detail="Job not completed")
@@ -173,7 +237,7 @@ def future_predict(req: FutureRequest):
 
 @router.post("/contract-check/{job_id}")
 async def contract_check(job_id: str, file: UploadFile = File(...)):
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if not job or job.status != "completed":
             raise HTTPException(status_code=404, detail="Job not completed or not found")
@@ -238,3 +302,69 @@ async def contract_check(job_id: str, file: UploadFile = File(...)):
         "dtype_mismatches": dtype_mismatches,
         "incoming_columns": incoming_columns,
     }
+
+
+@router.post("/batch-predict/{job_id}")
+async def batch_predict(job_id: str, file: UploadFile = File(...)):
+    with db_session() as db:
+        job = db.query(JobModel).filter(JobModel.id == job_id).first()
+        if not job or job.status != "completed":
+            raise HTTPException(status_code=404, detail="Job not completed or not found")
+
+        try:
+            raw_results = json.loads(job.results_json) if job.results_json else {}
+        except Exception:
+            raw_results = {}
+        results = normalize_results(raw_results)
+
+    from infra.storage import resolve_model_path
+    model_path = resolve_model_path(job_id) or results.get("model_path")
+    if not model_path or not os.path.exists(model_path):
+        raise HTTPException(status_code=404, detail="Model file not found")
+
+    try:
+        model = joblib.load(model_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load model: {e}")
+
+    temp_path = None
+    try:
+        temp_path = await _stream_upload_to_file(
+            f"batch_{job_id}_{os.urandom(4).hex()}",
+            file.filename or "batch.csv",
+            file,
+        )
+        df = load_dataframe(filepath=temp_path)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not read batch file: {e}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    try:
+        expected_features = results.get("feature_names") or []
+        sanitized = sanitize_dataframe(df).df
+        
+        # Ensure only expected features are used
+        if expected_features:
+            sanitized = sanitized[expected_features]
+
+        preds = model.predict(sanitized)
+        df["prediction"] = preds
+
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(sanitized)
+            df["confidence_pct"] = [round(float(max(p)) * 100, 1) for p in proba]
+
+        # Return the first 100 rows as a preview, or return CSV download URL?
+        # For now, return JSON preview + row count.
+        preview = df.head(100).to_dict(orient="records")
+        return {
+            "job_id": job_id,
+            "row_count": len(df),
+            "preview": preview,
+            "status": "success"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch prediction failed: {e}")

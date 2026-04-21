@@ -241,16 +241,34 @@ def extract_datetime_features(df):
     return new_df
 
 
-def make_preprocessor(num_cols, cat_cols):
+def _resolve_pca_components(num_cols, pca_mode: str = "auto", pca_components: int = 0):
+    mode = str(pca_mode or "auto").strip().lower()
+    requested = int(pca_components or 0)
+    numeric_count = len(num_cols or [])
+
+    if numeric_count <= 1:
+        return None
+    if mode == "off":
+        return None
+    if mode == "always":
+        if requested > 1:
+            return min(requested, numeric_count - 1)
+        return min(24, max(8, numeric_count // 3))
+    if numeric_count >= 40:
+        return min(24, max(8, numeric_count // 3))
+    return None
+
+
+def make_preprocessor(num_cols, cat_cols, pca_mode: str = "auto", pca_components: int = 0):
     """Factory: returns a fresh, unfitted ColumnTransformer per call."""
     transformers = []
 
     # Numeric transformer
     if num_cols:
         use_interactions = len(num_cols) <= 18
-        pca_components = None
-        if len(num_cols) >= 40:
-            pca_components = min(24, max(8, len(num_cols) // 3))
+        resolved_pca_components = _resolve_pca_components(
+            num_cols, pca_mode=pca_mode, pca_components=pca_components
+        )
 
         num_steps = [
             ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
@@ -267,8 +285,8 @@ def make_preprocessor(num_cols, cat_cols):
                 )
             )
         num_steps.append(("scaler", StandardScaler()))
-        if pca_components:
-            num_steps.append(("pca", PCA(n_components=pca_components, random_state=42)))
+        if resolved_pca_components:
+            num_steps.append(("pca", PCA(n_components=resolved_pca_components, random_state=42)))
 
         num_transformer = Pipeline(steps=num_steps)
         transformers.append(("num", num_transformer, num_cols))
@@ -297,7 +315,7 @@ def make_preprocessor(num_cols, cat_cols):
     return ColumnTransformer(transformers=transformers)
 
 
-def make_lite_preprocessor(num_cols, cat_cols):
+def make_lite_preprocessor(num_cols, cat_cols, pca_mode: str = "auto", pca_components: int = 0):
     """Featherweight preprocessor for Stage 1 sweeps."""
     transformers = []
 
@@ -307,12 +325,15 @@ def make_lite_preprocessor(num_cols, cat_cols):
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
         ]
-        if len(num_cols) >= 80:
+        resolved_pca_components = _resolve_pca_components(
+            num_cols, pca_mode=pca_mode, pca_components=pca_components
+        )
+        if resolved_pca_components:
             num_steps.append(
                 (
                     "pca",
                     PCA(
-                        n_components=min(16, max(6, len(num_cols) // 8)),
+                        n_components=min(resolved_pca_components, min(16, max(6, len(num_cols) // 8))),
                         random_state=42,
                     ),
                 )

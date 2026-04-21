@@ -1,10 +1,12 @@
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc g++ \
     redis-server \
     nginx \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Setup Nginx for non-root user
@@ -27,6 +29,9 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 # Copy the rest of the application
 COPY --chown=user . .
 
+# Build the React frontend inside the image so deploys don't depend on checked-in artifacts.
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi && npm run build:frontend
+
 # Create necessary directories for the backend
 RUN mkdir -p backend/runs backend/tmp
 
@@ -35,9 +40,9 @@ RUN chmod +x start.sh
 ENV PYTHONPATH=$HOME/app/backend:$PYTHONPATH
 ENV MAX_UPLOAD_MB=500
 
-# Tell your start.sh script to boot Streamlit on 7860 (the only port HF exposes)
+# Tell start.sh which public port to expose through Nginx.
 ENV PORT=7860
 EXPOSE 7860
 
-# Start up using your existing robust launch script (handles FastAPI + Streamlit simultaneously)
+# Start up using the launcher script (FastAPI + Celery + Redis + Nginx).
 CMD ["bash", "start.sh"]

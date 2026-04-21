@@ -9,6 +9,7 @@ import time
 from sklearn.metrics import accuracy_score, r2_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error
 from sklearn.model_selection import train_test_split, cross_val_score, KFold, StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
 from sklearn.svm import SVC
 from xgboost import XGBClassifier, XGBRegressor
@@ -24,7 +25,7 @@ except Exception:
     LGBMRegressor = None
     LGBM_TYPES = tuple()
 
-from infra.database import get_db, JobModel
+from infra.database import get_db, db_session, JobModel
 from core.integrations import MLTracking
 from core.feature_engine import ManagedFeatureEngine
 from core.meta_learning import zero_shot_recommend
@@ -34,7 +35,7 @@ from services.training.evaluator import _resolve_scoring, stability_check
 
 def _update_history_db(job_id: str, history: list):
     """Write history snapshot to the DB using its own isolated session."""
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if job:
             job.history_json = json.dumps(history)
@@ -64,6 +65,7 @@ class ModelAgent:
         pool = {
             "Logistic Regression" if is_clf else "Linear Regression": 
                 LogisticRegression(max_iter=1000) if is_clf else LinearRegression(),
+            "Decision Tree": DecisionTreeClassifier(random_state=42) if is_clf else DecisionTreeRegressor(random_state=42),
             "Random Forest": RandomForestClassifier() if is_clf else RandomForestRegressor(),
             "XGBoost": XGBClassifier(eval_metric='logloss') if is_clf else XGBRegressor(),
         }

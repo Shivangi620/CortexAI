@@ -1,16 +1,16 @@
 """api/routes/datasets.py — Dataset upload, profile, health, detect, leakage."""
-from fastapi import APIRouter, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 import json
 import os
 import csv
 import zipfile
 from uuid import uuid4
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import pandas as pd
 from sqlalchemy import create_engine
 
-from infra.database import get_db, DatasetModel
+from infra.database import get_db, db_session, DatasetModel
 from infra.result_contract import normalize_results
 from infra.storage import get_run_dir, get_model_path, get_metrics_path, get_schema_path
 from core.data_profiler import profile_dataset
@@ -66,7 +66,13 @@ def _persist_dataframe_as_csv(dataset_id: str, df):
     return csv_path
 
 
-def _build_dataset_response(dataset_id: str, df, source_type: str = "upload", display_name: str | None = None, parent_dataset_id: str | None = None):
+def _build_dataset_response(
+    dataset_id: str,
+    df,
+    source_type: str = "upload",
+    display_name: str | None = None,
+    parent_dataset_id: str | None = None,
+):
     sanitized = sanitize_dataframe(df, dataset_name=display_name)
     df = sanitized.df
     file_path = _persist_dataframe_as_csv(dataset_id, df)
@@ -79,7 +85,7 @@ def _build_dataset_response(dataset_id: str, df, source_type: str = "upload", di
     except Exception:
         profile_json = json.dumps({})
 
-    with get_db() as db:
+    with db_session() as db:
         db.add(
             DatasetModel(
                 id=dataset_id,
@@ -235,7 +241,7 @@ def _restore_imported_job(dataset_id: str, bundle_payload: dict):
         with open(get_metrics_path(job_id), "w") as handle:
             json.dump(results, handle, indent=2)
 
-    with get_db() as db:
+    with db_session() as db:
         from infra.database import JobModel
 
         db.add(
@@ -349,7 +355,10 @@ async def upload_dataset(
     imported_job_id = None
     if bundle_payload:
         try:
-            imported_job_id = _restore_imported_job(dataset_id, bundle_payload)
+            imported_job_id = _restore_imported_job(
+                dataset_id,
+                bundle_payload,
+            )
         except Exception:
             imported_job_id = None
 
@@ -424,10 +433,11 @@ def create_dataset_from_ocr_review(dataset_id: str, req: OCRReviewRequest):
     except Exception as e:
         return {"error": f"Failed to create reviewed OCR dataset: {e}"}
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == new_dataset_id).first()
         if dataset:
             dataset.parent_dataset_id = dataset_id
+            db.commit()
     return response
 
 
@@ -440,7 +450,7 @@ class RepairPreviewRequest(BaseModel):
 def repair_preview(req: RepairPreviewRequest):
     from services.training.preprocessing import auto_clean_data
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
         if not dataset:
             return {"error": "Dataset not found"}
@@ -477,7 +487,7 @@ class RepairApplyRequest(BaseModel):
 def repair_apply(req: RepairApplyRequest):
     from services.training.preprocessing import auto_clean_data
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
         if not dataset:
             return {"error": "Dataset not found"}
@@ -505,10 +515,11 @@ def repair_apply(req: RepairApplyRequest):
     except Exception as e:
         return {"error": f"Failed to save repaired dataset: {e}"}
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == new_dataset_id).first()
         if dataset:
             dataset.parent_dataset_id = req.dataset_id
+            db.commit()
 
     response["repair_logs"] = repair_logs
     return response
@@ -524,7 +535,7 @@ class MergeStudioRequest(BaseModel):
 
 @router.post("/merge-studio")
 def merge_studio(req: MergeStudioRequest):
-    with get_db() as db:
+    with db_session() as db:
         left_dataset = db.query(DatasetModel).filter(DatasetModel.id == req.left_dataset_id).first()
         right_dataset = db.query(DatasetModel).filter(DatasetModel.id == req.right_dataset_id).first()
         if not left_dataset or not right_dataset:
@@ -576,10 +587,11 @@ def merge_studio(req: MergeStudioRequest):
     except Exception as e:
         return {"error": f"Failed to save merged dataset: {e}"}
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == new_dataset_id).first()
         if dataset:
             dataset.parent_dataset_id = req.left_dataset_id
+            db.commit()
 
     response["merge_summary"] = {
         "join_type": join_type,
@@ -597,7 +609,7 @@ def merge_studio(req: MergeStudioRequest):
 
 @router.post("/merge-studio/preview")
 def merge_studio_preview(req: MergeStudioRequest):
-    with get_db() as db:
+    with db_session() as db:
         left_dataset = db.query(DatasetModel).filter(DatasetModel.id == req.left_dataset_id).first()
         right_dataset = db.query(DatasetModel).filter(DatasetModel.id == req.right_dataset_id).first()
         if not left_dataset or not right_dataset:
@@ -634,7 +646,7 @@ def merge_studio_preview(req: MergeStudioRequest):
 
 @router.get("/dataset/{dataset_id}")
 def get_dataset_info(dataset_id: str):
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
             return {"error": "Dataset not found"}
@@ -651,7 +663,7 @@ def get_datasets(limit: int = 100, include_archived: bool = False):
 
 @router.post("/dataset/{dataset_id}/archive")
 def archive_dataset(dataset_id: str):
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
             return {"error": "Dataset not found"}
@@ -669,7 +681,7 @@ def archive_dataset(dataset_id: str):
 
 @router.post("/dataset/{dataset_id}/unarchive")
 def unarchive_dataset(dataset_id: str):
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
             return {"error": "Dataset not found"}
@@ -689,7 +701,7 @@ def unarchive_dataset(dataset_id: str):
 def delete_dataset(dataset_id: str):
     from infra.database import JobModel, ExperimentRun, DriftCheck, DriftSchedule, WorkspaceModel, NotificationModel
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
             return {"error": "Dataset not found"}
@@ -726,6 +738,10 @@ def delete_dataset(dataset_id: str):
 
 @router.get("/dataset/{dataset_id}/versions")
 def dataset_versions(dataset_id: str, target_column: Optional[str] = None):
+    with db_session() as db:
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+    if not dataset:
+        return {"error": "Dataset not found"}
     return compare_dataset_versions(dataset_id, target=target_column)
 
 
@@ -738,7 +754,7 @@ def get_latest_workspace():
 def restore_workspace(dataset_id: Optional[str] = None, job_id: Optional[str] = None):
     snapshot = get_workspace_snapshot(dataset_id=dataset_id, job_id=job_id)
     if not snapshot.get("dataset") and not snapshot.get("job"):
-        return {"error": "No persisted workspace found"}
+        raise HTTPException(status_code=404, detail="No persisted workspace found")
     return snapshot
 
 
@@ -746,10 +762,10 @@ def restore_workspace(dataset_id: Optional[str] = None, job_id: Optional[str] = 
 
 @router.get("/health/{dataset_id}")
 def get_health_score(dataset_id: str):
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
-            return {"error": "Dataset not found"}
+            raise HTTPException(status_code=404, detail="Dataset not found")
         try:
             profile = json.loads(dataset.profile_json)
         except Exception:
@@ -769,10 +785,10 @@ def detect_problem_type(req: DetectRequest):
     if req.target_column:
         req.target_column = req.target_column.strip()
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
         if not dataset:
-            return {"error": "Dataset not found"}
+            raise HTTPException(status_code=404, detail="Dataset not found")
         try:
             profile = json.loads(dataset.profile_json)
         except Exception:
@@ -782,9 +798,9 @@ def detect_problem_type(req: DetectRequest):
     try:
         df = load_dataframe(filepath=file_path)
         if df is None or df.empty:
-            return {"error": "Dataset is empty or unreadable"}
+            raise HTTPException(status_code=422, detail="Dataset is empty or unreadable")
     except Exception as e:
-        return {"error": f"Could not load dataset: {e}"}
+        raise HTTPException(status_code=422, detail=f"Could not load dataset: {e}") from e
 
     from services.profiling_service import detect_problem_type as _detect
     result = _detect(df, profile, req.target_column)
@@ -799,7 +815,7 @@ def get_leakage_report(dataset_id: str, target_column: Optional[str] = None):
     if target_column:
         target_column = target_column.strip()
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not dataset:
             return {"error": "Dataset not found"}
@@ -830,7 +846,7 @@ def get_leakage_report(dataset_id: str, target_column: Optional[str] = None):
 
 @router.get("/dataset/{dataset_id}/timeline")
 def get_dataset_timeline(dataset_id: str):
-    with get_db() as db:
+    with db_session() as db:
         current = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
         if not current:
             return {"error": "Dataset not found"}
@@ -879,4 +895,8 @@ def get_dataset_timeline(dataset_id: str):
 
 @router.get("/dataset/{dataset_id}/lineage-graph")
 def get_dataset_lineage_graph(dataset_id: str):
+    with db_session() as db:
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+    if not dataset:
+        return {"error": "Dataset not found"}
     return build_lineage_graph(dataset_id)

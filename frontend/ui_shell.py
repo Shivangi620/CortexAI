@@ -22,6 +22,13 @@ SESSION_DEFAULTS = {
 }
 
 
+_ORIGINAL_SESSION_REQUEST = requests.sessions.Session.request
+
+
+def _patch_requests_for_auth() -> None:
+    pass
+
+
 def load_css() -> None:
     css_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "style.css")
     try:
@@ -38,6 +45,30 @@ def ensure_session_state() -> None:
     if not st.session_state.get("_workspace_bootstrapped"):
         restore_workspace_state()
         st.session_state["_workspace_bootstrapped"] = True
+
+
+def set_authenticated_user(user: dict | None, token: str | None) -> None:
+    pass
+
+
+def clear_authenticated_user() -> None:
+    pass
+
+
+def current_user() -> dict:
+    return {"username": "guest", "id": "guest_user_id"}
+
+
+def restore_auth_state() -> None:
+    pass
+
+
+def render_account_controls() -> None:
+    pass
+
+
+def require_authentication() -> None:
+    pass
 
 
 def _query_param_value(name: str) -> Optional[str]:
@@ -179,8 +210,6 @@ def prepare_dataframe_for_display(data: Any) -> pd.DataFrame:
             or pd.api.types.is_string_dtype(series)
             or pd.api.types.is_categorical_dtype(series)
         ):
-            # Display tables are safer when every loose/object column is normalized
-            # into a single scalar-friendly representation before Streamlit Arrow conversion.
             df[col] = series.map(_serialize_cell)
     return df
 
@@ -226,6 +255,7 @@ def render_page_shell(
 
     accent_labels = {
         "default": "Core Mode",
+        "soft": "Intake Mode",
         "analysis": "Analysis Mode",
         "lab": "Training Mode",
         "results": "Results Mode",
@@ -234,23 +264,27 @@ def render_page_shell(
 
     st.markdown(
         f"""
-        <section class="page-hero page-hero--{accent}">
-            <div class="page-hero__grid"></div>
-            <div class="page-hero__glow page-hero__glow--one"></div>
-            <div class="page-hero__glow page-hero__glow--two"></div>
-            <div class="page-hero__scanline"></div>
-            <div class="page-hero__orbit"></div>
-            <div class="page-hero__copy">
-                <div class="page-hero__eyebrow">{eyebrow}</div>
-                <div class="page-hero__badge">
-                    <span class="page-hero__badge-dot"></span>
-                    {accent_label}
+        <div class="codin-frame">
+            <section class="page-hero page-hero--{accent}">
+                <div class="page-hero__bezel" aria-hidden="true"></div>
+                <div class="page-hero__grid"></div>
+                <div class="page-hero__hex" aria-hidden="true"></div>
+                <div class="page-hero__glow page-hero__glow--one"></div>
+                <div class="page-hero__glow page-hero__glow--two"></div>
+                <div class="page-hero__scanline"></div>
+                <div class="page-hero__orbit"></div>
+                <div class="page-hero__copy">
+                    <div class="page-hero__eyebrow">{eyebrow}</div>
+                    <div class="page-hero__badge">
+                        <span class="page-hero__badge-dot"></span>
+                        {accent_label}
+                    </div>
+                    <h1 class="page-hero__title">{title}</h1>
+                    <p class="page-hero__desc">{description}</p>
                 </div>
-                <h1 class="page-hero__title">{title}</h1>
-                <p class="page-hero__desc">{description}</p>
-            </div>
-            <div class="page-hero__stats">{stat_markup}</div>
-        </section>
+                <div class="page-hero__stats">{stat_markup}</div>
+            </section>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -269,7 +303,7 @@ def render_workspace_banner() -> None:
 
     st.markdown(
         f"""
-        <div class="workspace-banner">
+        <div class="workspace-banner workspace-banner--nexus">
             <div class="workspace-pill">
                 <span>Dataset</span>
                 <strong>{dataset_display}</strong>
@@ -309,6 +343,19 @@ def render_section_intro(label: str, title: str, text: str) -> None:
     )
 
 
+def render_focus_strip(items: Iterable[tuple[str, str]]) -> None:
+    item_markup = "".join(
+        f"""
+        <div class="focus-strip__item">
+            <span>{label}</span>
+            <strong>{detail}</strong>
+        </div>
+        """
+        for label, detail in items
+    )
+    st.markdown(f'<div class="focus-strip">{item_markup}</div>', unsafe_allow_html=True)
+
+
 def render_backend_notice(backend_ok: bool) -> None:
     state = "Connected" if backend_ok else "Offline"
     theme = "success" if backend_ok else "danger"
@@ -326,3 +373,4 @@ def render_backend_notice(backend_ok: bool) -> None:
         """,
         unsafe_allow_html=True,
     )
+

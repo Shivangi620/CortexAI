@@ -1,17 +1,37 @@
 """api/routes/training.py — Train, status, jobs, leaderboard, ensemble, WebSocket."""
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import json
 import asyncio
 import pandas as pd
 
-from infra.database import get_db, DatasetModel, JobModel
+from infra.database import get_db, db_session, DatasetModel, JobModel
 from infra.result_contract import normalize_results, sanitize_for_json
 from core.file_loader import load_dataframe
 
 router = APIRouter(prefix="/api", tags=["training"])
+
+
+def _resolve_target_column(df, requested_target: str, suggested_target: str = "") -> str:
+    requested = (requested_target or "").strip()
+    suggested = (suggested_target or "").strip()
+    columns = list(df.columns)
+
+    def match(name: str) -> str:
+        if not name:
+            return ""
+        if name in columns:
+            return name
+        normalized_name = name.casefold().replace(" ", "").replace("_", "")
+        for column in columns:
+            normalized_column = str(column).casefold().replace(" ", "").replace("_", "")
+            if normalized_column == normalized_name:
+                return column
+        return ""
+
+    return match(requested) or match(suggested) or ""
 
 
 # ── Train ──────────────────────────────────────────────────────────────────────
@@ -30,6 +50,8 @@ class TrainRequest(BaseModel):
     handle_imbalance: bool = False
     auto_clean: bool = True
     cv_folds: int = 0
+    pca_mode: str = "auto"
+    pca_components: int = 0
     export_model: bool = True
     export_code: bool = True
     export_report: bool = True
@@ -46,16 +68,18 @@ class TrainingForecastRequest(BaseModel):
     handle_imbalance: bool = False
     auto_clean: bool = True
     cv_folds: int = 0
+    pca_mode: str = "auto"
+    pca_components: int = 0
 
 
 @router.post("/train/forecast")
 def get_training_forecast(req: TrainingForecastRequest):
     from services.training.forecasting import estimate_training_forecast
 
-    with get_db() as db:
+    with db_session() as db:
         dataset = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
         if not dataset:
-            return {"error": "Dataset not found"}
+            raise HTTPException(status_code=404, detail="Dataset not found")
 
         try:
             profile = json.loads(dataset.profile_json) if dataset.profile_json else {}
@@ -73,6 +97,8 @@ def get_training_forecast(req: TrainingForecastRequest):
         handle_imbalance=req.handle_imbalance,
         auto_clean=req.auto_clean,
         eval_metric=req.eval_metric,
+        pca_mode=req.pca_mode,
+        pca_components=req.pca_components,
     )
 
 
@@ -82,13 +108,38 @@ def start_training(req: TrainRequest):
 
     from uuid import uuid4
 
-    with get_db() as db:
-        dataset = (
-            db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
-        )
+    with db_session() as db:
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == req.dataset_id).first()
         if not dataset:
-            return {"error": "Dataset not found"}
+            raise HTTPException(status_code=404, detail="Dataset not found")
         file_path = dataset.file_path
+        try:
+            profile = json.loads(dataset.profile_json) if dataset.profile_json else {}
+        except Exception:
+            profile = {}
+
+    try:
+        df_preview = load_dataframe(filepath=file_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not read dataset for training: {e}",
+        ) from e
+
+    resolved_target = _resolve_target_column(
+        df_preview,
+        req.target_column,
+        profile.get("suggested_target", ""),
+    )
+    if not resolved_target:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Target column '{req.target_column}' was not found in the selected dataset. "
+                "Choose one of the available columns or use the suggested target."
+            ),
+        )
+    req.target_column = resolved_target
 
     job_id = str(uuid4())
 
@@ -96,7 +147,6 @@ def start_training(req: TrainRequest):
     if not eval_metric:
         inferred_task = "classification"
         try:
-            df_preview = load_dataframe(filepath=file_path)
             if (
                 df_preview is not None
                 and not df_preview.empty
@@ -125,6 +175,8 @@ def start_training(req: TrainRequest):
         "handle_imbalance": req.handle_imbalance,
         "auto_clean": req.auto_clean,
         "cv_folds": req.cv_folds or 5,
+        "pca_mode": req.pca_mode,
+        "pca_components": req.pca_components,
         "preset_name": req.preset_name,
         "workspace_id": req.workspace_id,
         "workspace_name": req.workspace_name,
@@ -138,7 +190,7 @@ def start_training(req: TrainRequest):
     except Exception:
         params_json = json.dumps({})
 
-    with get_db() as db:
+    with db_session() as db:
         db.add(
             JobModel(
                 id=job_id,
@@ -164,6 +216,8 @@ def start_training(req: TrainRequest):
         handle_imbalance=req.handle_imbalance,
         auto_clean=req.auto_clean,
         cv_folds=req.cv_folds or 5,
+        pca_mode=req.pca_mode,
+        pca_components=req.pca_components,
     )
 
     return {"job_id": job_id}
@@ -174,10 +228,10 @@ def start_training(req: TrainRequest):
 
 @router.get("/status/{job_id}")
 def get_status(job_id: str):
-    with get_db() as db:
+    with db_session() as db:
         job = db.query(JobModel).filter(JobModel.id == job_id).first()
         if not job:
-            return {"error": "Job not found"}
+            raise HTTPException(status_code=404, detail="Job not found")
 
         try:
             history = json.loads(job.history_json) if job.history_json else []
@@ -219,7 +273,7 @@ def get_status(job_id: str):
 
 @router.get("/jobs")
 def list_jobs():
-    with get_db() as db:
+    with db_session() as db:
         jobs = db.query(JobModel).order_by(JobModel.created_at.desc()).limit(100).all()
 
         result = []
@@ -256,7 +310,7 @@ def list_jobs():
 
 @router.get("/leaderboard")
 def global_leaderboard():
-    with get_db() as db:
+    with db_session() as db:
         jobs = db.query(JobModel).filter(JobModel.status == "completed").all()
 
         leaderboard = []
@@ -304,7 +358,7 @@ async def websocket_status(websocket: WebSocket, job_id: str):
     await websocket.accept()
     try:
         while True:
-            with get_db() as db:
+            with db_session() as db:
                 job = db.query(JobModel).filter(JobModel.id == job_id).first()
                 if not job:
                     await websocket.send_json({"error": "Job not found"})
@@ -344,4 +398,8 @@ class EnsembleRequest(BaseModel):
 def build_ensemble(req: EnsembleRequest):
     from services.ensemble_service import build_ensemble as _build
 
-    return _build(req.job_ids, req.strategy, req.dataset_id)
+    return _build(
+        req.job_ids,
+        req.strategy,
+        req.dataset_id,
+    )
