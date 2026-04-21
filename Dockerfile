@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     nginx \
     nodejs \
     npm \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Setup Nginx for non-root user
