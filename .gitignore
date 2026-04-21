@@ -1,12 +1,19 @@
 venv/
+node_modules/
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.coverage
+.DS_Store
 
 # Runtime/state artifacts
 automl_studio.db
+backend/automl_studio.db
 dump.rdb
 tmp/
 backend/tmp/
+.env
 
 # Model/export artifacts
 *.pkl
@@ -15,6 +22,7 @@ backend/tmp/
 # Run artifacts
 runs/
 backend/runs/
+frontend/static/
 
 # Data files
 *.csv
