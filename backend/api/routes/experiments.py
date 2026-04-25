@@ -5,7 +5,8 @@ import json
 import math
 from pydantic import BaseModel
 
-from infra.database import get_db, db_session, ExperimentRun, TeamNote, WorkspaceModel, JobModel
+from infra.database import db_session, ExperimentRun, TeamNote, WorkspaceModel, JobModel
+from infra.launch_origin import parse_launch_origin
 from infra.result_contract import sanitize_for_json
 from services.studio_service import experiment_diff, list_notifications
 
@@ -18,7 +19,6 @@ def _safe_float(value):
         return numeric if math.isfinite(numeric) else None
     except (TypeError, ValueError):
         return None
-
 
 def _resolve_experiment_runs(db, raw_ids):
     cleaned_ids = [item.strip() for item in raw_ids if item and item.strip()]
@@ -48,6 +48,14 @@ def list_experiments(limit: int = 50, task_type: Optional[str] = None):
         if task_type:
             q = q.filter(ExperimentRun.task_type == task_type)
         runs = q.limit(limit).all()
+        job_ids = [run.job_id for run in runs if run.job_id]
+        job_rows = db.query(JobModel).filter(JobModel.id.in_(job_ids)).all() if job_ids else []
+        job_params_map = {}
+        for job in job_rows:
+            try:
+                job_params_map[job.id] = json.loads(job.params_json) if job.params_json else {}
+            except Exception:
+                job_params_map[job.id] = {}
 
         result = []
         for r in runs:
@@ -65,6 +73,7 @@ def list_experiments(limit: int = 50, task_type: Optional[str] = None):
                 leaderboard = json.loads(r.leaderboard_json) if r.leaderboard_json else []
             except Exception:
                 leaderboard = []
+            launch_origin = parse_launch_origin(job_params_map.get(r.job_id))
 
             result.append({
                 "id": r.id,
@@ -84,6 +93,8 @@ def list_experiments(limit: int = 50, task_type: Optional[str] = None):
                 "preset_name": r.preset_name,
                 "summary_text": r.summary_text,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                "launch_source": launch_origin["launch_source"],
+                "launch_label": launch_origin["launch_label"],
                 "hyperparams": sanitize_for_json(hyperparams),
                 "metrics": sanitize_for_json(metrics),
                 "leaderboard": sanitize_for_json(leaderboard),
@@ -100,6 +111,14 @@ def compare_experiments(ids: str = Query(..., description="Comma-separated exper
         runs, unresolved = _resolve_experiment_runs(db, id_list)
         if not runs:
             raise HTTPException(status_code=404, detail="No matching experiment runs were found.")
+        job_ids = [run.job_id for run in runs if run.job_id]
+        job_rows = db.query(JobModel).filter(JobModel.id.in_(job_ids)).all() if job_ids else []
+        job_params_map = {}
+        for job in job_rows:
+            try:
+                job_params_map[job.id] = json.loads(job.params_json) if job.params_json else {}
+            except Exception:
+                job_params_map[job.id] = {}
 
         comparison = []
         for r in runs:
@@ -112,6 +131,7 @@ def compare_experiments(ids: str = Query(..., description="Comma-separated exper
                 metrics = json.loads(r.metrics_json) if r.metrics_json else {}
             except Exception:
                 metrics = {}
+            launch_origin = parse_launch_origin(job_params_map.get(r.job_id))
 
             comparison.append({
                 "id": r.id,
@@ -129,6 +149,8 @@ def compare_experiments(ids: str = Query(..., description="Comma-separated exper
                 "preset_name": r.preset_name,
                 "summary_text": r.summary_text,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                "launch_source": launch_origin["launch_source"],
+                "launch_label": launch_origin["launch_label"],
                 "hyperparams": sanitize_for_json(hyperparams),
                 "metrics": sanitize_for_json(metrics),
             })
@@ -148,6 +170,12 @@ def get_experiment(run_id: str):
         r = db.query(ExperimentRun).filter(ExperimentRun.id == run_id).first()
         if not r:
             raise HTTPException(status_code=404, detail="Experiment not found")
+        job = db.query(JobModel).filter(JobModel.id == r.job_id).first() if r.job_id else None
+        try:
+            job_params = json.loads(job.params_json) if job and job.params_json else {}
+        except Exception:
+            job_params = {}
+        launch_origin = parse_launch_origin(job_params)
 
         try:
             hyperparams = json.loads(r.hyperparams_json) if r.hyperparams_json else {}
@@ -182,6 +210,8 @@ def get_experiment(run_id: str):
             "preset_name": r.preset_name,
             "summary_text": r.summary_text,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "launch_source": launch_origin["launch_source"],
+            "launch_label": launch_origin["launch_label"],
             "hyperparams": sanitize_for_json(hyperparams),
             "metrics": sanitize_for_json(metrics),
             "leaderboard": sanitize_for_json(leaderboard),

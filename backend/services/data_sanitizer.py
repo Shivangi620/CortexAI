@@ -68,11 +68,14 @@ def _maybe_datetime(series: pd.Series) -> tuple[pd.Series, bool]:
     return series, False
 
 
-def _normalize_categories(series: pd.Series) -> tuple[pd.Series, bool]:
+def _normalize_categories(
+    series: pd.Series,
+    lowercase_labels: bool = True,
+) -> tuple[pd.Series, bool]:
     if not (
         pd.api.types.is_object_dtype(series)
         or pd.api.types.is_string_dtype(series)
-        or pd.api.types.is_categorical_dtype(series)
+        or isinstance(series.dtype, pd.CategoricalDtype)
     ):
         return series, False
     normalized = series.map(_normalize_text_cell)
@@ -80,11 +83,13 @@ def _normalize_categories(series: pd.Series) -> tuple[pd.Series, bool]:
     if non_null.empty:
         return normalized, True
     lowered = non_null.astype(str).str.lower()
-    if lowered.nunique() <= max(50, int(len(lowered) * 0.5)):
+    if lowercase_labels and lowered.nunique() <= max(50, int(len(lowered) * 0.5)):
         remapped = normalized.map(
             lambda x: x.lower() if isinstance(x, str) else x
         )
         return remapped.astype("category"), True
+    if len(non_null) <= max(50, int(len(non_null) * 0.5)):
+        return normalized.astype("category"), True
     return normalized, True
 
 
@@ -92,6 +97,7 @@ def sanitize_dataframe(
     df: pd.DataFrame,
     target: str | None = None,
     dataset_name: str | None = None,
+    drop_duplicate_rows: bool = True,
 ) -> SanitizeResult:
     clean_df = df.copy()
     logs: List[str] = []
@@ -137,17 +143,21 @@ def sanitize_dataframe(
                 logs.append(f"Sanitizer: Detected datetime column '{col}'.")
                 continue
 
-            normalized, changed = _normalize_categories(clean_df[col])
+            normalized, changed = _normalize_categories(
+                clean_df[col],
+                lowercase_labels=(col != target),
+            )
             clean_df[col] = normalized
             if changed:
                 report["categorical_columns"].append(col)
 
-    before_dupes = len(clean_df)
-    clean_df = clean_df.drop_duplicates().reset_index(drop=True)
-    dupes_removed = before_dupes - len(clean_df)
-    if dupes_removed:
-        report["duplicate_rows_removed"] = int(dupes_removed)
-        logs.append(f"Sanitizer: Removed {dupes_removed} duplicate rows.")
+    if drop_duplicate_rows:
+        before_dupes = len(clean_df)
+        clean_df = clean_df.drop_duplicates().reset_index(drop=True)
+        dupes_removed = before_dupes - len(clean_df)
+        if dupes_removed:
+            report["duplicate_rows_removed"] = int(dupes_removed)
+            logs.append(f"Sanitizer: Removed {dupes_removed} duplicate rows.")
 
     if target:
         if target not in clean_df.columns:
@@ -159,7 +169,7 @@ def sanitize_dataframe(
             if (
                 target_series.dtype == object
                 or pd.api.types.is_string_dtype(target_series)
-                or pd.api.types.is_categorical_dtype(target_series)
+                or isinstance(target_series.dtype, pd.CategoricalDtype)
             ):
                 invalid_target = invalid_target | target_series.astype(str).str.strip().str.lower().isin(NULL_LIKE_VALUES)
             removed = int(invalid_target.sum())

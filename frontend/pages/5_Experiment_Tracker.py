@@ -1,3 +1,9 @@
+"""
+Legacy Streamlit Experiment Tracker page for CODIN compatibility workflows.
+
+The primary product UI is now the React studio served by FastAPI.
+"""
+
 import streamlit as st
 import requests
 import pandas as pd
@@ -32,7 +38,7 @@ def api_json(path: str, timeout: int = 10):
         return {"error": str(e)}
 
 
-st.set_page_config(page_title="Experiment Tracker", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Legacy Experiment Tracker - CODIN", page_icon="📊", layout="wide")
 
 load_css()
 ensure_session_state()
@@ -61,6 +67,7 @@ render_page_shell(
     accent="analysis",
 )
 render_workspace_banner()
+st.info(f"Primary React studio: {API_URL}/tracking")
 render_section_intro(
     "Comparison Deck",
     "The tracker is now framed as a review workspace instead of a plain table dump.",

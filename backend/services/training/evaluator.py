@@ -1,12 +1,129 @@
 import pandas as pd
 import numpy as np
-from sklearn.metrics import accuracy_score, r2_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import accuracy_score, r2_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error, roc_auc_score
 from sklearn.model_selection import train_test_split
 try:
     from lightgbm import LGBMClassifier, LGBMRegressor
     LGBM_TYPES = (LGBMClassifier, LGBMRegressor)
 except Exception:
     LGBM_TYPES = tuple()
+
+
+CLASSIFICATION_HINTS = {
+    "class",
+    "label",
+    "status",
+    "outcome",
+    "segment",
+    "category",
+    "grade",
+    "tier",
+    "flag",
+    "fraud",
+    "churn",
+    "default",
+    "approved",
+    "rejected",
+}
+
+CLASSIFICATION_METRICS = {
+    "accuracy",
+    "precision",
+    "recall",
+    "f1",
+    "f1-score",
+    "f1 score",
+    "roc_auc",
+    "roc-auc",
+    "roc auc",
+    "auc",
+}
+REGRESSION_METRICS = {"r2", "r²", "r2 score", "mae", "mean absolute error", "mse", "mean squared error", "rmse", "root mean squared error"}
+
+
+def _default_metric_for_task(task_type: str) -> str:
+    task_norm = str(task_type or "").strip().lower()
+    if task_norm == "regression":
+        return "RMSE"
+    return "F1-score"
+
+
+def detect_task_type(y, target_name: str = "", override: str = ""):
+    override_norm = str(override or "").strip().lower()
+    if override_norm in {"classification", "regression"}:
+        return {
+            "task_type": override_norm,
+            "source": "user_override",
+            "reason": f"Task forced to {override_norm} by request.",
+        }
+
+    series = pd.Series(y).dropna()
+    if series.empty:
+        return {
+            "task_type": "classification",
+            "source": "fallback",
+            "reason": "Target is empty after dropping nulls; defaulting to classification.",
+        }
+
+    lowered_name = str(target_name or "").strip().lower().replace(" ", "_")
+    hinted = any(token in lowered_name for token in CLASSIFICATION_HINTS)
+
+    if (
+        pd.api.types.is_bool_dtype(series)
+        or pd.api.types.is_object_dtype(series)
+        or pd.api.types.is_string_dtype(series)
+        or isinstance(series.dtype, pd.CategoricalDtype)
+    ):
+        return {
+            "task_type": "classification",
+            "source": "semantic_dtype",
+            "reason": "Target is categorical/string-like, so classification was selected.",
+        }
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.isna().all():
+        return {
+            "task_type": "classification",
+            "source": "fallback",
+            "reason": "Target could not be interpreted numerically; using classification.",
+        }
+
+    unique_count = int(numeric.nunique(dropna=True))
+    unique_ratio = float(unique_count / max(len(numeric), 1))
+    fractional_mass = float(np.mean(np.abs(numeric - np.round(numeric)) > 1e-9))
+
+    if fractional_mass > 0.05:
+        return {
+            "task_type": "regression",
+            "source": "continuous_target",
+            "reason": "Target contains genuine fractional values, which strongly suggests regression.",
+        }
+
+    small_cardinality = unique_count <= max(5, min(20, int(len(numeric) * 0.02) or 5))
+    if unique_count <= 2:
+        return {
+            "task_type": "classification",
+            "source": "binary_numeric_target",
+            "reason": "Target has only two numeric states, so classification was selected.",
+        }
+    if hinted and unique_count <= 50:
+        return {
+            "task_type": "classification",
+            "source": "target_semantics",
+            "reason": "Target name suggests discrete labels and cardinality is low enough for classification.",
+        }
+    if small_cardinality and unique_ratio <= 0.02:
+        return {
+            "task_type": "classification",
+            "source": "cardinality",
+            "reason": "Target has extremely low cardinality relative to dataset size, so classification was selected.",
+        }
+
+    return {
+        "task_type": "regression",
+        "source": "numeric_default",
+        "reason": "Target behaves like a numeric continuous outcome, so regression was selected.",
+    }
 
 def _resolve_scoring(eval_metric: str, is_clf: bool) -> str:
     metric = (eval_metric or "").strip().lower()
@@ -17,6 +134,8 @@ def _resolve_scoring(eval_metric: str, is_clf: bool) -> str:
             return "precision_weighted"
         if metric in {"recall"}:
             return "recall_weighted"
+        if metric in {"roc_auc", "roc-auc", "roc auc", "auc"}:
+            return "roc_auc_ovr_weighted"
         return "accuracy"
     if metric in {"mae", "mean absolute error"}:
         return "neg_mean_absolute_error"
@@ -25,6 +144,72 @@ def _resolve_scoring(eval_metric: str, is_clf: bool) -> str:
     if metric in {"rmse", "root mean squared error"}:
         return "neg_root_mean_squared_error"
     return "r2"
+
+
+def normalize_training_controls(
+    task_type: str,
+    goal: str,
+    mode: str,
+    eval_metric: str = "",
+    handle_imbalance: bool = False,
+) -> dict:
+    task_norm = str(task_type or "classification").strip().lower()
+    if task_norm not in {"classification", "regression"}:
+        task_norm = "classification"
+
+    goal_lookup = {
+        "speed": "Speed",
+        "balanced": "Balanced",
+        "performance": "Performance",
+        "full": "Performance",
+    }
+    mode_lookup = {
+        "fast": "Fast",
+        "balanced": "Balanced",
+        "full": "Full",
+        "performance": "Full",
+        "speed": "Fast",
+    }
+
+    resolved_goal = goal_lookup.get(str(goal or "").strip().lower(), "Balanced")
+    resolved_mode = mode_lookup.get(str(mode or "").strip().lower(), "Balanced")
+
+    metric_raw = str(eval_metric or "").strip()
+    metric_norm = metric_raw.lower()
+    warnings = []
+
+    if task_norm == "classification":
+        if metric_norm and metric_norm in REGRESSION_METRICS:
+            replacement = _default_metric_for_task(task_norm)
+            warnings.append(
+                f"Requested metric '{metric_raw}' is regression-only; switching to {replacement} for classification."
+            )
+            metric_raw = replacement
+        elif not metric_raw:
+            metric_raw = _default_metric_for_task(task_norm)
+    else:
+        if metric_norm and metric_norm in CLASSIFICATION_METRICS:
+            warnings.append(
+                f"Requested metric '{metric_raw}' is classification-only; switching to RMSE for regression."
+            )
+            metric_raw = "RMSE"
+        elif not metric_raw:
+            metric_raw = "RMSE"
+
+    resolved_handle_imbalance = bool(handle_imbalance and task_norm == "classification")
+    if handle_imbalance and task_norm != "classification":
+        warnings.append(
+            "Imbalance handling is only applied to classification tasks; disabling it for regression."
+        )
+
+    return {
+        "task_type": task_norm,
+        "goal": resolved_goal,
+        "mode": resolved_mode,
+        "eval_metric": metric_raw,
+        "handle_imbalance": resolved_handle_imbalance,
+        "warnings": warnings,
+    }
 
 
 def stability_check(model, X, y, is_clf, seeds=(42, 123, 999), scoring_name: str = ""):
@@ -92,6 +277,8 @@ def stability_check(model, X, y, is_clf, seeds=(42, 123, 999), scoring_name: str
                 scores.append(float(precision))
             elif scoring_name == "recall_weighted":
                 scores.append(float(recall))
+            elif scoring_name == "roc_auc_ovr_weighted":
+                scores.append(float(roc_auc if roc_auc is not None else accuracy))
             else:
                 scores.append(float(accuracy))
         else:
@@ -145,13 +332,10 @@ class DiagnosticAgent:
         
         if rows < 500:
             risk = "🔴 High Overfitting Risk"
-            msg = "Small dataset size (<500 rows) suggests the model may memorize rather than learn."
         elif rows / cols < 10:
             risk = "🟡 Medium Overfitting Risk"
-            msg = "High dimensionality (few rows per feature) may cause variance issues."
         else:
             risk = "✅ Low Risk"
-            msg = "Solid data-to-feature ratio detected."
 
         # Dynamic accuracy estimate based on health score
         # Formula: Base 85% reduced by health score gap, clamped to 10-95%

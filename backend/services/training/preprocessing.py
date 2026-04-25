@@ -35,6 +35,9 @@ class OutlierClipper(BaseEstimator, TransformerMixin):
         X = pd.DataFrame(X)
         return X.clip(lower=self.lower_, upper=self.upper_, axis=1).values
 
+    def get_feature_names_out(self, input_features=None):
+        return np.asarray(input_features if input_features is not None else [], dtype=object)
+
 
 class SkewTransformer(BaseEstimator, TransformerMixin):
     """Auto-Log Transformer for skewed numeric features."""
@@ -50,6 +53,56 @@ class SkewTransformer(BaseEstimator, TransformerMixin):
             # Log transform skewed columns (ensuring non-negative)
             X[col] = np.log1p(np.maximum(X[col], 0))
         return X.values
+
+    def get_feature_names_out(self, input_features=None):
+        return np.asarray(input_features if input_features is not None else [], dtype=object)
+
+
+class SafePCA(BaseEstimator, TransformerMixin):
+    """PCA wrapper that clamps n_components to the fitted matrix shape."""
+
+    def __init__(self, n_components=None, random_state=42):
+        self.n_components = n_components
+        self.random_state = random_state
+
+    def fit(self, X, y=None):
+        frame = pd.DataFrame(X)
+        n_samples, n_features = frame.shape
+        max_components = min(n_samples, n_features)
+
+        if max_components <= 1:
+            self._passthrough = True
+            self.n_components_ = None
+            self.pca_ = None
+            return self
+
+        requested = self.n_components
+        if isinstance(requested, float):
+            resolved = requested
+        elif requested is None:
+            resolved = None
+        else:
+            resolved = max(1, min(int(requested), max_components))
+
+        self._passthrough = False
+        self.n_components_ = resolved
+        self.pca_ = PCA(n_components=resolved, random_state=self.random_state)
+        self.pca_.fit(frame, y)
+        return self
+
+    def transform(self, X):
+        frame = pd.DataFrame(X)
+        if getattr(self, "_passthrough", False) or getattr(self, "pca_", None) is None:
+            return frame.values
+        return self.pca_.transform(frame)
+
+    def get_feature_names_out(self, input_features=None):
+        if getattr(self, "_passthrough", False) or getattr(self, "pca_", None) is None:
+            features = input_features or []
+            return np.asarray(features, dtype=object)
+
+        width = int(getattr(self.pca_, "n_components_", 0) or 0)
+        return np.asarray([f"pca_{idx}" for idx in range(width)], dtype=object)
 
 
 def fuzzy_merge_labels(series: pd.Series, threshold=0.9):
@@ -286,7 +339,9 @@ def make_preprocessor(num_cols, cat_cols, pca_mode: str = "auto", pca_components
             )
         num_steps.append(("scaler", StandardScaler()))
         if resolved_pca_components:
-            num_steps.append(("pca", PCA(n_components=resolved_pca_components, random_state=42)))
+            num_steps.append(
+                ("pca", SafePCA(n_components=resolved_pca_components, random_state=42))
+            )
 
         num_transformer = Pipeline(steps=num_steps)
         transformers.append(("num", num_transformer, num_cols))
@@ -332,7 +387,7 @@ def make_lite_preprocessor(num_cols, cat_cols, pca_mode: str = "auto", pca_compo
             num_steps.append(
                 (
                     "pca",
-                    PCA(
+                    SafePCA(
                         n_components=min(resolved_pca_components, min(16, max(6, len(num_cols) // 8))),
                         random_state=42,
                     ),

@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,8 +7,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 const outDir = path.join(rootDir, "frontend", "static");
+const logoSourcePath = path.join(rootDir, "frontend", "WhatsApp Image 2026-04-26 at 1.33.22 AM.jpeg");
+const logoOutputPath = path.join(outDir, "assets", "project-logo.jpeg");
 
 await mkdir(path.join(outDir, "assets"), { recursive: true });
+await copyFile(logoSourcePath, logoOutputPath);
 
 await build({
   entryPoints: [path.join(rootDir, "frontend", "react-src", "main.jsx")],
@@ -36,7 +39,7 @@ const html = `<!DOCTYPE html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CODIN Neural Studio</title>
+    <title>Inferyx Neural Studio</title>
     <link rel="stylesheet" href="/static/assets/app.css" />
   </head>
   <body>

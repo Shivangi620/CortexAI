@@ -1,17 +1,45 @@
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import json
 import os
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from infra.database import DriftCheck, DriftSchedule, DatasetModel, JobModel, get_db, db_session
+from infra.database import DriftCheck, DriftSchedule, DatasetModel, JobModel, db_session
 from infra.result_contract import normalize_results
 
 csv.field_size_limit(int(1e9))
 
 router = APIRouter(prefix="/api", tags=["drift"])
+
+
+def _resolve_retrain_launch_config(job_params: dict, goal_override: str = "", mode_override: str = "") -> dict:
+    return {
+        "goal": (goal_override or "").strip() or job_params.get("goal", "Balanced"),
+        "mode": (mode_override or "").strip() or job_params.get("mode", "Balanced"),
+    }
+
+
+def _resolve_retrain_launch_context(
+    launch_context_json: str = "",
+    *,
+    parent_job_id: str,
+    launch_config: dict,
+) -> dict:
+    base_context = {
+        "source": "drift_recommendation",
+        "parent_job_id": parent_job_id,
+        "recommended_goal": launch_config.get("goal", "Balanced"),
+        "recommended_mode": launch_config.get("mode", "Balanced"),
+    }
+    try:
+        payload = json.loads(launch_context_json) if launch_context_json else {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {**base_context, **payload}
 
 
 @router.post("/drift/{job_id}")
@@ -30,6 +58,10 @@ async def detect_drift(job_id: str, file: UploadFile = File(...)):
             results = normalize_results(json.loads(job.results_json) if job.results_json else {})
         except Exception:
             results = {}
+        try:
+            params = json.loads(job.params_json) if job.params_json else {}
+        except Exception:
+            params = {}
 
     # Save uploaded file temporarily
     tmp_path = f"tmp/drift_{job_id}_{os.urandom(4).hex()}.csv"
@@ -106,8 +138,16 @@ async def detect_drift(job_id: str, file: UploadFile = File(...)):
         current_df,
         baseline_stats,
         feature_names,
+        target_name=results.get("target"),
         warning_threshold=warning_threshold,
         critical_threshold=critical_threshold,
+        task_type="classification" if results.get("is_classification") else "regression",
+        current_model=results.get("best_model") or "",
+        metric_name=results.get("metric_name") or "",
+        current_score=results.get("score"),
+        current_validation_gap=(results.get("validation_summary") or {}).get("absolute_gap_display"),
+        goal=params.get("goal") or "",
+        mode=params.get("mode") or "",
     )
 
     try:
@@ -248,11 +288,15 @@ def get_drift_schedule(job_id: str):
                 try:
                     created_at = datetime.fromisoformat(created_at)
                 except Exception:
-                    created_at = datetime.utcnow()
+                    created_at = datetime.now(UTC)
             
             next_due = created_at + timedelta(days=frequency_days)
             next_due_at = next_due.isoformat()
-            due_now = enabled and next_due <= datetime.utcnow()
+            if created_at.tzinfo is None:
+                next_due_cmp = next_due.replace(tzinfo=UTC)
+            else:
+                next_due_cmp = next_due.astimezone(UTC)
+            due_now = enabled and next_due_cmp <= datetime.now(UTC)
         elif enabled:
             due_now = True
 
@@ -309,7 +353,13 @@ def save_drift_schedule(
 
 
 @router.post("/drift/{job_id}/retrain")
-async def retrain_on_drift_dataset(job_id: str, file: UploadFile = File(...)):
+async def retrain_on_drift_dataset(
+    job_id: str,
+    file: UploadFile = File(...),
+    goal_override: str = Form(""),
+    mode_override: str = Form(""),
+    launch_context_json: str = Form(""),
+):
     from core.file_loader import load_dataframe
     from core.data_profiler import profile_dataset
     from api.routes.training import TrainRequest, start_training
@@ -364,11 +414,22 @@ async def retrain_on_drift_dataset(job_id: str, file: UploadFile = File(...)):
         )
         db.commit()
 
+    launch_config = _resolve_retrain_launch_config(
+        job_params,
+        goal_override=goal_override,
+        mode_override=mode_override,
+    )
+    launch_context = _resolve_retrain_launch_context(
+        launch_context_json,
+        parent_job_id=job_id,
+        launch_config=launch_config,
+    )
+
     req = TrainRequest(
         dataset_id=new_dataset_id,
         target_column=job_params.get("target_column", ""),
-        goal=job_params.get("goal", "Balanced"),
-        mode=job_params.get("mode", "Balanced"),
+        goal=launch_config["goal"],
+        mode=launch_config["mode"],
         eval_metric=job_params.get("eval_metric", ""),
         selected_features=job_params.get("selected_features", []),
         handle_imbalance=bool(job_params.get("handle_imbalance", False)),
@@ -379,8 +440,26 @@ async def retrain_on_drift_dataset(job_id: str, file: UploadFile = File(...)):
         export_report=bool(job_params.get("export_report", True)),
     )
     train_resp = start_training(req)
+    new_job_id = train_resp.get("job_id")
+    if new_job_id:
+        try:
+            with db_session() as db:
+                new_job = db.query(JobModel).filter(JobModel.id == new_job_id).first()
+                if new_job:
+                    try:
+                        params = json.loads(new_job.params_json) if new_job.params_json else {}
+                    except Exception:
+                        params = {}
+                    params["launch_context"] = launch_context
+                    new_job.params_json = json.dumps(params)
+                    db.commit()
+        except Exception:
+            pass
     return {
         "dataset_id": new_dataset_id,
         "profile": profile,
-        "job_id": train_resp.get("job_id"),
+        "job_id": new_job_id,
+        "goal": launch_config["goal"],
+        "mode": launch_config["mode"],
+        "launch_context": launch_context,
     }

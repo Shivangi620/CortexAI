@@ -1,13 +1,14 @@
 """api/routes/misc.py — Chat, recommendations, resume, export, zeroshot, meta."""
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import List
 import json
 import os
 
-from infra.database import get_db, db_session, DatasetModel, JobModel
+from infra.database import db_session, DatasetModel, JobModel
+from infra.launch_origin import parse_launch_origin
 from infra.result_contract import normalize_results
 from services.studio_service import narrate_experiment, synthetic_data_judge
 
@@ -131,7 +132,11 @@ def export_model(job_id: str):
         except Exception:
             results = {}
 
-    from core.export import create_export_bundle, cleanup_old_exports
+    from core.export import (
+        build_export_bundle_filename,
+        create_export_bundle,
+        cleanup_old_exports,
+    )
 
     cleanup_old_exports(max_age_hours=24)
 
@@ -140,8 +145,16 @@ def export_model(job_id: str):
     if not export_path or not isinstance(export_path, str):
         raise HTTPException(status_code=500, detail="Export failed")
 
+    try:
+        params = json.loads(job.params_json) if job.params_json else {}
+    except Exception:
+        params = {}
+    launch_origin = parse_launch_origin(params)
+
     return FileResponse(
-        path=export_path, filename="automl_export.zip", media_type="application/zip"
+        path=export_path,
+        filename=build_export_bundle_filename(job_id, launch_origin),
+        media_type="application/zip",
     )
 
 
@@ -163,7 +176,6 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
     - total_rows: Total rows in expanded dataset
     - preview: First 5 synthetic rows
     """
-    import pandas as pd
     from uuid import uuid4
     from core.synthetic import generate_synthetic, suggest_expansion_size
     from core.data_profiler import profile_dataset
@@ -212,7 +224,9 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
         return {"error": f"Failed to generate synthetic data: {str(e)}"}
 
     new_id = str(uuid4())
+    os.makedirs("tmp", exist_ok=True)
     new_path = f"tmp/{new_id}.csv"
+    actual_added = len(synthetic_only)
 
     try:
         expanded_df.to_csv(new_path, index=False)
@@ -230,7 +244,7 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
             }
         )
 
-    new_profile.update({"synthetic_added": n_new, "original_rows": original_rows})
+    new_profile.update({"synthetic_added": actual_added, "original_rows": original_rows})
 
     try:
         profile_json = json.dumps(new_profile)
@@ -260,11 +274,13 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
             continue
 
     return {
+        "dataset_id": dataset_id,
         "new_dataset_id": new_id,
         "original_rows": original_rows,
         "recommended_rows": recommended_n,
         "requested_rows": requested_n,
-        "synthetic_rows_added": len(synthetic_only),
+        "generation_mode": "manual" if requested_n else "auto",
+        "synthetic_rows_added": actual_added,
         "total_rows": len(expanded_df),
         "augmentation_ratio": round(len(synthetic_only) / max(original_rows, 1), 2),
         "adjustment_note": adjustment_note,
@@ -319,9 +335,12 @@ def playground_train(req: PlaygroundRequest):
             status_code=422, detail=f"Could not reload dataset: {e}"
         ) from e
 
-    return quick_train(
-        df, req.target_column, req.selected_features, req.selected_models
-    )
+    try:
+        return quick_train(
+            df, req.target_column, req.selected_features, req.selected_models
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
 
 # ── Zero-Shot + Meta ───────────────────────────────────────────────────────────

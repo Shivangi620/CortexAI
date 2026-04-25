@@ -1,41 +1,62 @@
+import asyncio
 import json
 import math
 import os
+import joblib
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LogisticRegression
 from infra.database import DatasetModel, ExperimentRun, JobModel
+from infra.storage import get_model_path
 from .conftest import TestingSessionLocal
+from api.routes.datasets import get_latest_workspace, restore_workspace
+from api.routes.experiments import list_experiments
+from api.routes.drift import _resolve_retrain_launch_config, _resolve_retrain_launch_context
+from api.routes.predict import (
+    ScenarioPackPayload,
+    batch_predict,
+    get_scenario_context,
+    list_scenario_packs,
+    save_scenario_pack,
+)
+from api.routes.misc import synthetic_expand
+from api.routes.reports import _artifact_filename, _model_card_html
+from api.routes.training import (
+    TrainingRegistryPreviewRequest,
+    get_status,
+    get_training_model_registry,
+    global_leaderboard,
+    list_jobs,
+)
+from main import app, health_check
 
 
-def test_health_check(client):
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+def test_health_check():
+    response = health_check()
+    assert response["status"] == "ok"
 
 
-def test_get_jobs_empty(client):
-    # Depending on DB setup, it might be empty
-    response = client.get("/api/jobs")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
+def test_get_jobs_empty():
+    response = list_jobs()
+    assert isinstance(response, list)
 
 
-def test_get_experiments(client):
-    response = client.get("/api/experiments")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
+def test_get_experiments():
+    response = list_experiments()
+    assert isinstance(response, list)
 
 
-def test_get_leaderboard(client):
-    response = client.get("/api/leaderboard")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
+def test_get_leaderboard():
+    response = global_leaderboard()
+    assert isinstance(response, list)
 
 
-def test_404_not_found(client):
-    response = client.get("/api/this_does_not_exist")
-    assert response.status_code == 404
+def test_404_not_found():
+    paths = {route.path for route in app.routes}
+    assert "/api/this_does_not_exist" not in paths
 
 
-def test_status_endpoint_sanitizes_nan_payloads(client):
+def test_status_endpoint_sanitizes_nan_payloads():
     with TestingSessionLocal() as db:
         db.add(
             JobModel(
@@ -50,17 +71,203 @@ def test_status_endpoint_sanitizes_nan_payloads(client):
         )
         db.commit()
 
-    response = client.get("/api/status/job-with-nan")
-
-    assert response.status_code == 200
-    body = response.json()
+    body = get_status("job-with-nan")
     assert body["history"] == [{"time": "Final", "metric": None}]
     assert body["results"]["score"] == 0.0
     assert body["results"]["leaderboard"] == [{"model": "LGBM", "score": None}]
     assert body["insights"] == {"confidence": None}
 
 
-def test_experiments_endpoint_sanitizes_nan_payloads(client):
+def test_status_endpoint_exposes_persisted_model_registry_preview():
+    with TestingSessionLocal() as db:
+        db.add(
+            JobModel(
+                id="job-with-registry-preview",
+                dataset_id="ds-1",
+                status="training",
+                params_json=json.dumps(
+                    {
+                        "goal": "Balanced",
+                        "mode": "Full",
+                        "model_registry_preview": {
+                            "selection_goal": "Performance",
+                            "mode": "Full",
+                            "selected_models": ["Logistic Regression", "Random Forest", "Hist Gradient Boosting"],
+                            "model_groups": {
+                                "baseline": ["Logistic Regression"],
+                                "boosting": ["Hist Gradient Boosting"],
+                                "optional": [],
+                            },
+                        },
+                    }
+                ),
+            )
+        )
+        db.commit()
+
+    body = get_status("job-with-registry-preview")
+    assert body["id"] == "job-with-registry-preview"
+    assert body["config"]["goal"] == "Balanced"
+    assert body["model_registry_preview"]["selection_goal"] == "Performance"
+    assert body["model_registry_preview"]["selected_models"] == [
+        "Logistic Regression",
+        "Random Forest",
+        "Hist Gradient Boosting",
+    ]
+
+
+def test_jobs_and_experiments_expose_drift_reopen_origin():
+    with TestingSessionLocal() as db:
+        db.add(
+            JobModel(
+                id="job-with-launch-origin",
+                dataset_id="ds-1",
+                status="completed",
+                params_json=json.dumps(
+                    {
+                        "launch_context": {
+                            "source": "drift_recommendation",
+                            "parent_job_id": "parent-job",
+                        }
+                    }
+                ),
+                results_json=json.dumps(
+                    {
+                        "best_model": "Random Forest",
+                        "score": 91.2,
+                        "metric_name": "F1-score",
+                        "is_classification": True,
+                    }
+                ),
+            )
+        )
+        db.add(
+            ExperimentRun(
+                id="exp-with-launch-origin",
+                job_id="job-with-launch-origin",
+                dataset_id="ds-1",
+                model_name="Random Forest",
+                metric_name="F1-score",
+                score="91.2",
+                task_type="classification",
+                mode="Balanced",
+                goal="Balanced",
+            )
+        )
+        db.commit()
+
+    jobs = list_jobs()
+    job_row = next(row for row in jobs if row["id"] == "job-with-launch-origin")
+    assert job_row["launch_source"] == "drift_recommendation"
+    assert job_row["launch_label"] == "Drift Reopen"
+
+    experiments = list_experiments()
+    exp_row = next(row for row in experiments if row["id"] == "exp-with-launch-origin")
+    assert exp_row["launch_source"] == "drift_recommendation"
+    assert exp_row["launch_label"] == "Drift Reopen"
+
+
+def test_model_card_html_includes_drift_reopen_origin():
+    html = _model_card_html(
+        "job-drift-card",
+        {"best_model": "Random Forest", "metric_name": "F1-score", "score": 91.2},
+        {"rows": 1000, "cols": 12},
+        {},
+        "",
+        {
+            "launch_source": "drift_recommendation",
+            "launch_label": "Drift Reopen",
+            "launch_context": {
+                "parent_job_id": "parent-job-123",
+                "recommended_goal": "Performance",
+                "recommended_mode": "Full",
+                "message": "Reopened after critical drift.",
+            },
+        },
+    )
+
+    assert "Operational Origin" in html
+    assert "Drift Reopen" in html
+    assert "parent-job-123" in html
+    assert "Performance" in html
+    assert "Full" in html
+
+
+def test_artifact_filename_uses_launch_origin_prefix():
+    drift_name = _artifact_filename(
+        "job-drift-card",
+        {"launch_source": "drift_recommendation"},
+        "pdf",
+    )
+    manual_name = _artifact_filename(
+        "job-manual-card",
+        {"launch_source": "manual"},
+        "model_card",
+    )
+
+    assert drift_name == "drift_reopen_automl_report_job-drif.pdf"
+    assert manual_name == "manual_model_card_job-manu.html"
+
+
+def test_synthetic_expand_returns_dataset_ids_and_actual_row_count(tmp_path):
+    dataset_id = "synthetic-route-ds"
+    dataset_path = tmp_path / "synthetic_route.csv"
+    frame = pd.DataFrame(
+        {
+            "flag": [True, False, None, True],
+            "city": ["Austin", "Boston", "Austin", None],
+            "value": [1.2, 2.4, 1.7, 2.1],
+        }
+    )
+    frame.to_csv(dataset_path, index=False)
+
+    with TestingSessionLocal() as db:
+        db.add(
+            DatasetModel(
+                id=dataset_id,
+                file_path=os.fspath(dataset_path),
+                profile_json=json.dumps({"rows": len(frame), "cols": len(frame.columns), "columns": list(frame.columns)}),
+                source_type="upload",
+            )
+        )
+        db.commit()
+
+    payload = synthetic_expand(dataset_id, n_rows=6)
+
+    assert payload["dataset_id"] == dataset_id
+    assert payload["new_dataset_id"]
+    assert payload["synthetic_rows_added"] == 6
+    assert payload["total_rows"] == len(frame) + 6
+
+
+def test_scenario_pack_persists_approval_policy_and_approved_scenarios():
+    payload = ScenarioPackPayload(
+        name="Guardrail Pack",
+        description="Policy-aware simulator pack",
+        base_mode="cohort",
+        sweep_feature="income",
+        sweep_values=[10, 20, 30],
+        approval_policy={
+            "max_numeric_delta_ratio": 0.2,
+            "hard_bounds": True,
+            "blocked_features": ["salary", "price"],
+        },
+        approved_scenarios=["scenario-1", "scenario-2"],
+    )
+
+    response = save_scenario_pack("scenario-pack-job", payload)
+    listed = list_scenario_packs("scenario-pack-job")
+
+    assert response["saved"] is True
+    assert listed["packs"]
+    pack = listed["packs"][0]
+    assert pack["approval_policy"]["max_numeric_delta_ratio"] == 0.2
+    assert pack["approval_policy"]["hard_bounds"] is True
+    assert pack["approval_policy"]["blocked_features"] == ["salary", "price"]
+    assert pack["approved_scenarios"] == ["scenario-1", "scenario-2"]
+
+
+def test_experiments_endpoint_sanitizes_nan_payloads():
     with TestingSessionLocal() as db:
         db.add(
             ExperimentRun(
@@ -82,10 +289,7 @@ def test_experiments_endpoint_sanitizes_nan_payloads(client):
         )
         db.commit()
 
-    response = client.get("/api/experiments")
-
-    assert response.status_code == 200
-    rows = response.json()
+    rows = list_experiments()
     target = next(row for row in rows if row["id"] == "exp-with-nan")
     assert target["score"] is None
     assert target["hyperparams"] == {"depth": 8, "lr": None}
@@ -93,7 +297,7 @@ def test_experiments_endpoint_sanitizes_nan_payloads(client):
     assert target["leaderboard"] == [{"model": "LGBM", "score": None}]
 
 
-def test_workspace_latest_restores_dataset_and_job(client, tmp_path):
+def test_workspace_latest_restores_dataset_and_job(tmp_path):
     csv_path = tmp_path / "workspace.csv"
     csv_path.write_text("feature,target\n1,yes\n2,no\n", encoding="utf-8")
 
@@ -125,17 +329,14 @@ def test_workspace_latest_restores_dataset_and_job(client, tmp_path):
         )
         db.commit()
 
-    response = client.get("/api/workspace/latest")
-
-    assert response.status_code == 200
-    body = response.json()
+    body = get_latest_workspace()
     assert body["dataset"]["id"] == "workspace-ds"
     assert body["dataset"]["profile"]["suggested_target"] == "target"
     assert body["dataset"]["preview_records"][0]["feature"] == 1
     assert body["job"]["id"] == "workspace-job"
 
 
-def test_workspace_restore_honors_explicit_job_id(client):
+def test_workspace_restore_honors_explicit_job_id():
     with TestingSessionLocal() as db:
         if not db.query(DatasetModel).filter(DatasetModel.id == "workspace-ds").first():
             db.add(
@@ -166,9 +367,304 @@ def test_workspace_restore_honors_explicit_job_id(client):
             )
         db.commit()
 
-    response = client.get("/api/workspace/restore", params={"job_id": "workspace-job"})
-
-    assert response.status_code == 200
-    body = response.json()
+    body = restore_workspace(job_id="workspace-job")
     assert body["job"]["id"] == "workspace-job"
     assert body["dataset"]["id"] == "workspace-ds"
+
+
+def test_training_model_registry_preview_exposes_selected_models_and_full_mode_upgrade(tmp_path):
+    csv_path = tmp_path / "registry_preview.csv"
+    frame = pd.DataFrame(
+        {
+            "age": [21, 29, 37, 46, 52, 61],
+            "income": [31000, 45000, 62000, 83000, 91000, 102000],
+            "city": ["A", "B", "A", "B", "C", "A"],
+            "target": [0, 0, 1, 1, 1, 0],
+        }
+    )
+    frame.to_csv(csv_path, index=False)
+
+    with TestingSessionLocal() as db:
+        db.add(
+            DatasetModel(
+                id="registry-preview-ds",
+                file_path=os.fspath(csv_path),
+                profile_json=json.dumps(
+                    {
+                        "rows": 6,
+                        "cols": 4,
+                        "columns": ["age", "income", "city", "target"],
+                        "suggested_target": "target",
+                    }
+                ),
+                source_type="upload",
+            )
+        )
+        db.commit()
+
+    body = get_training_model_registry(
+        TrainingRegistryPreviewRequest(
+            dataset_id="registry-preview-ds",
+            target_column="target",
+            goal="Balanced",
+            mode="Full",
+        )
+    )
+    assert body["task_type"] == "classification"
+    assert body["requested_goal"] == "Balanced"
+    assert body["selection_goal"] == "Performance"
+    assert "Logistic Regression" in body["selected_models"]
+    assert "Random Forest" in body["selected_models"]
+    assert "Hist Gradient Boosting" in body["selected_models"]
+
+
+def test_drift_retrain_launch_config_prefers_recommendation_override():
+    payload = _resolve_retrain_launch_config(
+        {"goal": "Balanced", "mode": "Balanced"},
+        goal_override="Performance",
+        mode_override="Full",
+    )
+
+    assert payload == {"goal": "Performance", "mode": "Full"}
+
+
+def test_drift_retrain_launch_config_falls_back_to_job_defaults():
+    payload = _resolve_retrain_launch_config(
+        {"goal": "Balanced", "mode": "Balanced"},
+        goal_override="",
+        mode_override="",
+    )
+
+    assert payload == {"goal": "Balanced", "mode": "Balanced"}
+
+
+def test_drift_retrain_launch_context_carries_origin_story():
+    payload = _resolve_retrain_launch_context(
+        json.dumps(
+            {
+                "source_job_id": "source-job-1234",
+                "message": "Re-open the model search beyond Logistic Regression.",
+                "candidate_models": ["Random Forest", "Hist Gradient Boosting"],
+            }
+        ),
+        parent_job_id="parent-job-9876",
+        launch_config={"goal": "Performance", "mode": "Full"},
+    )
+
+    assert payload["source"] == "drift_recommendation"
+    assert payload["parent_job_id"] == "parent-job-9876"
+    assert payload["recommended_goal"] == "Performance"
+    assert payload["recommended_mode"] == "Full"
+    assert payload["source_job_id"] == "source-job-1234"
+    assert payload["candidate_models"] == ["Random Forest", "Hist Gradient Boosting"]
+
+
+def test_scenario_context_endpoint_returns_ranges_and_rows(tmp_path):
+    csv_path = tmp_path / "scenario.csv"
+    frame = pd.DataFrame(
+        {
+            "age": [21, 29, 37, 46],
+            "income": [31000, 45000, 62000, 83000],
+            "target": [0, 0, 1, 1],
+        }
+    )
+    frame.to_csv(csv_path, index=False)
+
+    model = LogisticRegression(max_iter=1000)
+    model.fit(frame[["age", "income"]], frame["target"])
+    model_path = get_model_path("scenario-job")
+    joblib.dump(model, model_path)
+
+    with TestingSessionLocal() as db:
+        db.add(
+            DatasetModel(
+                id="scenario-ds",
+                file_path=os.fspath(csv_path),
+                profile_json=json.dumps({"rows": 4, "cols": 3, "columns": ["age", "income", "target"]}),
+                source_type="upload",
+            )
+        )
+        db.add(
+            JobModel(
+                id="scenario-job",
+                dataset_id="scenario-ds",
+                status="completed",
+                model_path=model_path,
+                results_json=json.dumps(
+                    {
+                        "best_model": "Logistic Regression",
+                        "score": 91.2,
+                        "feature_names": ["age", "income"],
+                        "target": "target",
+                        "is_classification": True,
+                        "model_path": model_path,
+                    }
+                ),
+            )
+        )
+        db.commit()
+
+    body = get_scenario_context("scenario-job")
+    assert body["feature_names"] == ["age", "income"]
+    assert len(body["feature_ranges"]) == 2
+    assert body["sample_rows"]
+
+
+def test_scenario_context_endpoint_sanitizes_non_finite_values(tmp_path):
+    csv_path = tmp_path / "scenario_dirty.csv"
+    frame = pd.DataFrame(
+        {
+            "age": [21, 29, 37, 46],
+            "income": [31000, np.nan, np.inf, 83000],
+            "target": [0, 0, 1, 1],
+        }
+    )
+    frame.to_csv(csv_path, index=False)
+
+    fit_frame = frame.replace([np.inf, -np.inf], np.nan).dropna()
+    model = LogisticRegression(max_iter=1000)
+    model.fit(fit_frame[["age", "income"]], fit_frame["target"])
+    model_path = get_model_path("scenario-job-dirty")
+    joblib.dump(model, model_path)
+
+    with TestingSessionLocal() as db:
+        db.add(
+            DatasetModel(
+                id="scenario-ds-dirty",
+                file_path=os.fspath(csv_path),
+                profile_json=json.dumps({"rows": 4, "cols": 3, "columns": ["age", "income", "target"]}),
+                source_type="upload",
+            )
+        )
+        db.add(
+            JobModel(
+                id="scenario-job-dirty",
+                dataset_id="scenario-ds-dirty",
+                status="completed",
+                model_path=model_path,
+                results_json=json.dumps(
+                    {
+                        "best_model": "Logistic Regression",
+                        "score": 91.2,
+                        "feature_names": ["age", "income"],
+                        "target": "target",
+                        "is_classification": True,
+                        "model_path": model_path,
+                    }
+                ),
+            )
+        )
+        db.commit()
+
+    body = get_scenario_context("scenario-job-dirty")
+    assert json.dumps(body)
+    income_range = next(item for item in body["feature_ranges"] if item["feature"] == "income")
+    assert income_range["min"] == 31000.0
+    assert income_range["max"] == 83000.0
+    assert body["sample_rows"][0]["values"]["income"] in {None, 57000.0}
+
+
+def test_batch_predict_preserves_duplicate_rows(tmp_path):
+    train_csv = tmp_path / "batch_train.csv"
+    train_frame = pd.DataFrame(
+        {
+            "age": [21, 29, 37, 46],
+            "income": [31000, 45000, 62000, 83000],
+            "target": [0, 0, 1, 1],
+        }
+    )
+    train_frame.to_csv(train_csv, index=False)
+
+    model = LogisticRegression(max_iter=1000)
+    model.fit(train_frame[["age", "income"]], train_frame["target"])
+    model_path = get_model_path("batch-job")
+    joblib.dump(model, model_path)
+
+    with TestingSessionLocal() as db:
+        db.add(
+            DatasetModel(
+                id="batch-ds",
+                file_path=os.fspath(train_csv),
+                profile_json=json.dumps({"rows": 4, "cols": 3, "columns": ["age", "income", "target"]}),
+                source_type="upload",
+            )
+        )
+        db.add(
+            JobModel(
+                id="batch-job",
+                dataset_id="batch-ds",
+                status="completed",
+                model_path=model_path,
+                results_json=json.dumps(
+                    {
+                        "best_model": "Logistic Regression",
+                        "score": 91.2,
+                        "feature_names": ["age", "income"],
+                        "target": "target",
+                        "is_classification": True,
+                        "model_path": model_path,
+                    }
+                ),
+            )
+        )
+        db.commit()
+
+    batch_csv = "\n".join(
+        [
+            "age,income",
+            "21,31000",
+            "21,31000",
+            "37,62000",
+            "37,62000",
+        ]
+    )
+
+    class FakeUpload:
+        def __init__(self, filename: str, content: bytes):
+            self.filename = filename
+            self._content = content
+            self._offset = 0
+
+        async def read(self, size: int = -1):
+            if self._offset >= len(self._content):
+                return b""
+            if size is None or size < 0:
+                size = len(self._content) - self._offset
+            chunk = self._content[self._offset : self._offset + size]
+            self._offset += len(chunk)
+            return chunk
+
+        async def close(self):
+            return None
+
+    upload = FakeUpload("batch.csv", batch_csv.encode("utf-8"))
+    body = asyncio.run(batch_predict("batch-job", upload))
+    assert body["row_count"] == 4
+    assert len(body["preview"]) == 4
+
+
+def test_model_card_uses_metric_labels_and_non_percent_regression_scores():
+    html = _model_card_html(
+        "job-rmse-card",
+        {
+            "best_model": "Ridge",
+            "metric_name": "CV RMSE",
+            "score": 51971.013,
+            "tested_models": [
+                {
+                    "model": "Ridge",
+                    "phase": "cross_validation",
+                    "score_label": "CV RMSE",
+                    "score": 51971.013,
+                }
+            ],
+        },
+        {"rows": 1200, "cols": 8},
+        {},
+        "",
+    )
+
+    assert "CV RMSE" in html
+    assert "51,971.0130" in html
+    assert "Cross Validation" in html
+    assert "Holdout Score" not in html

@@ -7,6 +7,27 @@ import os
 from typing import Dict, Any, List
 
 
+def _display_metric(metric_name: str, score_val: Any) -> str:
+    try:
+        score_float = float(score_val)
+    except (TypeError, ValueError):
+        return "N/A"
+
+    metric_lower = (metric_name or "").lower()
+    if "r²" in metric_name or metric_lower in {"r2", "r2 score"}:
+        return f"{score_float:.4f}"
+    if "rmse" in metric_lower or "mse" in metric_lower or "mae" in metric_lower:
+        return f"{score_float:,.4f}"
+    return f"{score_float:.1f}%"
+
+
+def _humanize_phase(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    return text.replace("_", " ").title()
+
+
 def generate_pdf(
     job_id: str,
     results: Dict[str, Any],
@@ -14,6 +35,7 @@ def generate_pdf(
     insights: Dict[str, Any],
     story: str,
     recommendations: List[Dict[str, Any]],
+    launch_origin: Dict[str, Any] | None = None,
 ) -> str:
     """
     Generate a multi-page PDF report and save it.
@@ -28,7 +50,6 @@ def generate_pdf(
             SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
             HRFlowable, PageBreak,
         )
-        from reportlab.lib.enums import TA_CENTER, TA_LEFT
     except ImportError:
         return _fallback_txt_report(job_id, results, profile)
 
@@ -47,8 +68,6 @@ def generate_pdf(
     h2_style      = ParagraphStyle("h2",      parent=styles["Heading2"], fontSize=13, textColor=colors.HexColor("#0f3460"), spaceAfter=3)
     body_style    = ParagraphStyle("body",    parent=styles["Normal"],   fontSize=10, spaceAfter=4)
     caption_style = ParagraphStyle("caption", parent=styles["Normal"],   fontSize=8,  textColor=colors.grey)
-    center_style  = ParagraphStyle("center",  parent=styles["Normal"],   alignment=TA_CENTER, fontSize=10)
-
     # Helper
     def hr():
         return HRFlowable(width="100%", thickness=1, color=colors.HexColor("#e0e0e0"), spaceAfter=6)
@@ -67,9 +86,16 @@ def generate_pdf(
     is_clf       = results.get("is_classification", True)
     target       = results.get("target", "target")
     task_label   = "Classification" if is_clf else "Regression"
+    launch_origin = launch_origin or {}
+    launch_label = launch_origin.get("launch_label", "Manual")
+    launch_context = launch_origin.get("launch_context", {}) or {}
 
     content.append(Paragraph("AutoML Studio", title_style))
     content.append(Paragraph("Automated Machine Learning Report", h2_style))
+    if launch_origin.get("launch_source") == "drift_recommendation":
+        content.append(Paragraph("Drift Reopen Review", body_style))
+    else:
+        content.append(Paragraph("Manual Run Review", body_style))
     content.append(spacer(0.5))
     content.append(hr())
 
@@ -79,7 +105,8 @@ def generate_pdf(
         ["Task Type",        task_label],
         ["Target Column",    target],
         ["Primary Metric",   metric_name],
-        ["Score",            f"{score}%" if not (metric_name and 'R²' in metric_name) else f"{score/100:.3f}"],
+        ["Score",            _display_metric(metric_name, score)],
+        ["Launch Origin",    launch_label],
         ["Job ID",           job_id[:16] + "..."],
     ]
     summary_table = Table(summary_data, colWidths=[6 * cm, 10 * cm])
@@ -96,6 +123,15 @@ def generate_pdf(
         ("PADDING",    (0, 0), (-1, -1), 6),
     ]))
     content.append(summary_table)
+    if launch_origin.get("launch_source") == "drift_recommendation":
+        content.append(spacer(0.2))
+        content.append(
+            Paragraph(
+                f"Operational context: drift monitoring reopened this run from "
+                f"{(launch_context.get('parent_job_id') or launch_context.get('source_job_id') or 'an earlier run')}.",
+                body_style,
+            )
+        )
 
     # ─────────────────────────────────────────────────────────
     # PAGE 2: Dataset Profile
@@ -152,11 +188,12 @@ def generate_pdf(
 
         lb_rows = [lb_header]
         for i, entry in enumerate(leaderboard[:8]):
+            row_metric_name = entry.get("score_label") or metric_name
             row = [
                 str(i + 1),
                 entry.get("model", ""),
-                f"{entry.get('score', 0)}%",
-                entry.get("phase", "").replace("_", " "),
+                _display_metric(row_metric_name, entry.get("score")),
+                _humanize_phase(entry.get("phase")),
             ]
             if is_clf:
                 row += [
@@ -230,6 +267,23 @@ def generate_pdf(
     content.append(PageBreak())
     content.append(Paragraph("Recommendations", h1_style))
     content.append(hr())
+    if launch_origin.get("launch_source") == "drift_recommendation":
+        content.append(Paragraph("Run Origin", h2_style))
+        content.append(
+            Paragraph(
+                launch_context.get("message")
+                or "This run was reopened from a drift recommendation, so the recommendations below should be read in that operational context.",
+                body_style,
+            )
+        )
+        content.append(
+            Paragraph(
+                f"Recommended lane: {launch_context.get('recommended_goal', results.get('goal', '—'))} / "
+                f"{launch_context.get('recommended_mode', results.get('mode', '—'))}",
+                body_style,
+            )
+        )
+        content.append(spacer(0.2))
 
     if recommendations:
         for rec in recommendations[:10]:
@@ -266,7 +320,7 @@ def generate_pdf(
     content.append(hr())
     content.append(Paragraph(
         f"Generated by AutoML Studio V4 | Job: {job_id[:12]}... | "
-        f"Model: {best_model} | {metric_name}: {score}%",
+        f"Model: {best_model} | {metric_name}: {_display_metric(metric_name, score)}",
         caption_style,
     ))
 
@@ -280,6 +334,9 @@ def _fallback_txt_report(job_id: str, results: Dict, profile: Dict) -> str:
     with open(path, "w") as f:
         f.write(f"AutoML Studio Report\nJob: {job_id}\n")
         f.write(f"Model: {results.get('best_model')}\n")
-        f.write(f"Score: {results.get('score')}%\n")
+        f.write(
+            f"{results.get('metric_name', 'Score')}: "
+            f"{_display_metric(results.get('metric_name', 'Score'), results.get('score'))}\n"
+        )
         f.write(f"Rows: {profile.get('rows')}\n")
     return path

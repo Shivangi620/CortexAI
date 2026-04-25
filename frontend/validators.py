@@ -1,7 +1,8 @@
 """
-Comprehensive input validation and type coercion.
+Legacy frontend validation helpers.
 
-Replaces fragile coerce_feature_payload() with robust schema-based validation.
+These validators are still useful for Python/Streamlit-side payload handling,
+even though the main product UI is now the React studio served by FastAPI.
 """
 
 import logging

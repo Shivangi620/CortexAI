@@ -1,6 +1,12 @@
+"""
+Legacy Streamlit Results page for CODIN compatibility workflows.
+
+The primary product UI is now the React studio served by FastAPI.
+"""
+
 import time
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 import requests
@@ -17,32 +23,18 @@ from ui_shell import (
     render_section_intro,
     render_workspace_banner,
 )
-from state_manager import StateManager, AppState
-from error_handler import ErrorHandler, ErrorType, APIError
-from typing import Any, Dict, List, Optional, Tuple
+from state_manager import StateManager
+from error_handler import ErrorHandler
+from typing import Any, Dict, List, Tuple
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 logger.info("Results Console initialized")
-logger = logging.getLogger(__name__)
-logger.info("Results Console initialized")
-
-# Old imports (kept for compatibility)
-from ui_shell import (
-    API_URL,
-    ensure_session_state,
-    load_css,
-    render_focus_strip,
-    render_page_shell,
-    render_safe_dataframe,
-    render_section_intro,
-    render_workspace_banner,
-)
 
 st.set_page_config(
-    page_title="Results Console - AutoML Studio", page_icon="📊", layout="wide"
+    page_title="Legacy Results Console - CODIN", page_icon="📊", layout="wide"
 )
 
 load_css()
@@ -167,6 +159,32 @@ def prepare_download(
             width="stretch",
             key=f"download_{session_key}",
         )
+
+
+def build_launch_origin(config: Dict[str, Any]) -> Dict[str, Any]:
+    config = config or {}
+    launch_context = config.get("launch_context", {}) if isinstance(config, dict) else {}
+    if not isinstance(launch_context, dict):
+        launch_context = {}
+    source = str(launch_context.get("source") or "manual").strip() or "manual"
+    label = "Drift Reopen" if source == "drift_recommendation" else "Manual"
+    return {
+        "launch_source": source,
+        "launch_label": label,
+        "launch_context": launch_context,
+    }
+
+
+def build_artifact_filename(job_id: str, launch_origin: Dict[str, Any], kind: str) -> str:
+    prefix = "drift_reopen" if launch_origin.get("launch_source") == "drift_recommendation" else "manual"
+    base = job_id[:8]
+    if kind == "zip":
+        return f"{prefix}_automl_export_{base}.zip"
+    if kind == "pdf":
+        return f"{prefix}_automl_report_{base}.pdf"
+    if kind == "model_card":
+        return f"{prefix}_model_card_{base}.html"
+    return f"{prefix}_{kind}_{base}"
 
 
 def render_status_badge(status: str):
@@ -320,6 +338,7 @@ state_mgr.update_job(job_id, job_data)
 status = job_data.get("status")
 history = job_data.get("history", []) or []
 reasoning = job_data.get("reasoning", []) or []
+launch_origin = build_launch_origin(job_data.get("config", {}) or {})
 profile = st.session_state.get("profile") or {}
 dataset_id = st.session_state.get("dataset_id")
 state_mgr.update_profile(profile, dataset_id)
@@ -339,6 +358,7 @@ render_page_shell(
     accent="results",
 )
 render_workspace_banner()
+st.info(f"Primary React studio: {API_URL}/results")
 
 # Mode switch for beginner vs advanced view (use StateManager)
 if not hasattr(state_mgr, "analysis") or not state_mgr.analysis:
@@ -383,6 +403,19 @@ with hero_right:
     st.markdown("### Run Status")
     render_status_badge(status or "unknown")
 st.markdown("</div>", unsafe_allow_html=True)
+
+if launch_origin.get("launch_source") == "drift_recommendation":
+    launch_context = launch_origin.get("launch_context", {}) or {}
+    parent_run = launch_context.get("parent_job_id") or launch_context.get("source_job_id") or "—"
+    recommended_goal = launch_context.get("recommended_goal", "—")
+    recommended_mode = launch_context.get("recommended_mode", "—")
+    launch_message = launch_context.get("message") or "This run was reopened from monitoring after drift review."
+    st.info(
+        f"Run Origin: {launch_origin['launch_label']} • Parent run: {str(parent_run)[:8]} • "
+        f"Lane: {recommended_goal} / {recommended_mode}\n\n{launch_message}"
+    )
+else:
+    st.caption("Run Origin: Manual studio launch")
 
 if status != "completed":
     if status == "failed":
@@ -1720,7 +1753,7 @@ with e1:
         "📥 Prepare Model + Code Bundle",
         f"export_zip_{job_id}",
         f"/export/{job_id}",
-        f"automl_export_{job_id[:8]}.zip",
+        build_artifact_filename(job_id, launch_origin, "zip"),
         "application/zip",
         timeout=120,
     )
@@ -1730,7 +1763,7 @@ with e2:
         "📄 Prepare PDF Report",
         f"report_pdf_{job_id}",
         f"/report/{job_id}/pdf",
-        f"automl_report_{job_id[:8]}.pdf",
+        build_artifact_filename(job_id, launch_origin, "pdf"),
         "application/pdf",
     )
 
@@ -1739,7 +1772,7 @@ with e3:
         "🪪 Prepare HTML Model Card",
         f"model_card_{job_id}",
         f"/report/{job_id}/model-card",
-        f"model_card_{job_id[:8]}.html",
+        build_artifact_filename(job_id, launch_origin, "model_card"),
         "text/html",
     )
 

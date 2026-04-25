@@ -3,7 +3,7 @@ import json
 import csv
 from celery import Celery
 
-from infra.database import get_db, db_session, JobModel, DatasetModel, NotificationModel, WorkspaceModel, ExperimentRun
+from infra.database import db_session, JobModel, DatasetModel, NotificationModel, WorkspaceModel, ExperimentRun
 from infra.logger import get_logger
 from infra.result_contract import normalize_results
 
@@ -33,6 +33,7 @@ celery_app.conf.broker_connection_retry_on_startup = True
 @celery_app.task(bind=True, max_retries=0)
 def run_training_job(
     self, job_id, dataset_id, file_path, target_column, goal, mode,
+    task_type="",
     eval_metric="Performance",
     selected_features=None,
     handle_imbalance=False,
@@ -62,6 +63,7 @@ def run_training_job(
         health_metadata = {}
 
     config = {
+        "task_type": task_type,
         "eval_metric": eval_metric,
         "selected_features": selected_features,
         "handle_imbalance": handle_imbalance,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from services.training.evaluator import normalize_training_controls
+
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
@@ -22,6 +24,7 @@ def estimate_training_forecast(
     target_column: str,
     goal: str,
     mode: str,
+    task_type: str = "",
     selected_features: List[str] | None = None,
     cv_folds: int = 0,
     handle_imbalance: bool = False,
@@ -40,7 +43,18 @@ def estimate_training_forecast(
         cols = len(all_columns)
 
     usable_feature_count = len(selected_features) if selected_features else max(cols - 1, 0)
-    task_type = str(profile.get("task_type") or "classification")
+    controls = normalize_training_controls(
+        task_type=str(task_type or profile.get("task_type") or "classification"),
+        goal=goal,
+        mode=mode,
+        eval_metric=eval_metric,
+        handle_imbalance=handle_imbalance,
+    )
+    task_type = controls["task_type"]
+    goal = controls["goal"]
+    mode = controls["mode"]
+    eval_metric = controls["eval_metric"]
+    handle_imbalance = controls["handle_imbalance"]
 
     mode_profile = {
         "Fast": {"sweep_size": 0.2 if rows < 5000 else 0.08, "top_k": 1, "trials": 0, "optuna": False},
@@ -115,6 +129,7 @@ def estimate_training_forecast(
         recommendations.append("PCA is disabled, so wide numeric datasets may train more slowly.")
     if not recommendations:
         recommendations.append("This configuration looks practical for an exploratory run.")
+    recommendations.extend(controls["warnings"])
 
     return {
         "task_type": task_type,

@@ -1,19 +1,31 @@
 {
-  "name": "codin-neural-console",
+  "name": "inferyx-neural-console",
   "private": true,
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build:frontend": "node scripts/build-frontend.mjs"
+    "build:frontend": "node scripts/build-frontend.mjs",
+    "lint:python": "node scripts/run-ruff.mjs backend",
+    "lint:frontend": "eslint \"frontend/react-src/**/*.{js,jsx}\" \"scripts/**/*.mjs\"",
+    "format:frontend": "prettier --write \"frontend/react-src/**/*.{js,jsx,css}\" \"scripts/**/*.mjs\" \"*.{json,md}\"",
+    "format:check:frontend": "prettier --check \"frontend/react-src/**/*.{js,jsx,css}\" \"scripts/**/*.mjs\" \"*.{json,md}\"",
+    "quality": "npm run lint:python && npm run lint:frontend && npm run build:frontend"
   },
   "dependencies": {
+    "gsap": "^3.15.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
-    "esbuild": "^0.28.0"
+    "@eslint/js": "^9.39.4",
+    "esbuild": "^0.28.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.5.0",
+    "prettier": "^3.8.3"
   },
-  "description": "--- title: AutoML Studio emoji: ✨ colorFrom: blue colorTo: indigo sdk: docker app_port: 7860 pinned: false ---",
+  "description": "Inferyx frontend build for the React + FastAPI AutoML workspace.",
   "main": "index.js",
   "directories": {
     "test": "tests"

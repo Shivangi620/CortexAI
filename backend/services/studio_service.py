@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
 
 from core.file_loader import load_dataframe
-from infra.database import DatasetModel, ExperimentRun, JobModel, WorkspaceModel, NotificationModel, get_db, db_session
+from infra.database import DatasetModel, ExperimentRun, JobModel, WorkspaceModel, NotificationModel, db_session
 from services.data_sanitizer import build_dataset_version_report
 
 
@@ -378,6 +378,23 @@ def synthetic_data_judge(dataset_id: str) -> Dict[str, Any]:
     notes: List[str] = []
     realism_score = 100.0
 
+    duplicate_ratio = float(synthetic_df.duplicated().mean()) if not synthetic_df.empty else 0.0
+    if duplicate_ratio > 0.08:
+        realism_score -= min(25.0, duplicate_ratio * 80.0)
+        notes.append(f"Duplicate synthetic rows are too common ({round(duplicate_ratio * 100, 1)}%).")
+
+    missing_deltas: List[float] = []
+    for col in synthetic_df.columns:
+        if col not in parent_df.columns:
+            continue
+        base_missing = float(parent_df[col].isna().mean())
+        synth_missing = float(synthetic_df[col].isna().mean())
+        delta = abs(synth_missing - base_missing)
+        missing_deltas.append(delta)
+        if delta > 0.2:
+            realism_score -= min(10.0, delta * 20.0)
+            notes.append(f"{col}: missing-value behavior drifted from the original dataset.")
+
     for col in numeric_cols[:40]:
         base = pd.to_numeric(parent_df[col], errors="coerce").dropna()
         synth = pd.to_numeric(synthetic_df[col], errors="coerce").dropna()
@@ -405,6 +422,8 @@ def synthetic_data_judge(dataset_id: str) -> Dict[str, Any]:
         "realism_score": realism_score,
         "verdict": verdict,
         "rows_evaluated": int(len(synthetic_df)),
+        "duplicate_ratio": round(duplicate_ratio, 4),
+        "avg_missing_delta": round(float(np.mean(missing_deltas)) if missing_deltas else 0.0, 4),
         "notes": notes[:10],
     }
 

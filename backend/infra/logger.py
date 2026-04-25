@@ -9,7 +9,7 @@ Usage:
 import logging
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Any
 
 
@@ -18,7 +18,7 @@ class StructuredFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         log_obj: dict[str, Any] = {
-            "ts": datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "level": record.levelname,
             "name": record.name,
             "msg": record.getMessage(),
@@ -56,7 +56,7 @@ class HumanFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         color = self.COLORS.get(record.levelname, "")
-        ts = datetime.utcnow().strftime("%H:%M:%S")
+        ts = datetime.now(UTC).strftime("%H:%M:%S")
         base = f"{color}[{ts}] {record.levelname:<8}{self.RESET} {record.name} — {record.getMessage()}"
         if record.exc_info:
             base += "\n" + self.formatException(record.exc_info)

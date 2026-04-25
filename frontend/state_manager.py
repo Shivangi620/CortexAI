@@ -1,8 +1,9 @@
 """
-Centralized state management layer for Results Console.
+Legacy Streamlit state management layer.
 
-Provides schema-enforced, lifecycle-controlled application state
-instead of scattered st.session_state access.
+This module backs older Streamlit-oriented results and playground flows.
+The current production UI is the React studio, but these state containers
+remain useful for compatibility and migration-safe support.
 """
 
 import logging
@@ -45,7 +46,7 @@ class AugmentationState:
 @dataclass
 class AppState:
     """
-    Single source of truth for Results Console state.
+    Single source of truth for legacy Streamlit results-console state.
 
     Enforces schema, prevents silent overwrites, and manages lifecycle.
     All state access goes through this dataclass.

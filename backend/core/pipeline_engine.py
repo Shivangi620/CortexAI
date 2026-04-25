@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 import pandas as pd
 
-from infra.database import get_db, db_session, JobModel
+from infra.database import db_session, JobModel
 from infra.logger import get_logger
 from infra.result_contract import sanitize_for_json
 
@@ -72,6 +72,11 @@ class PipelineContext:
         self.cat_cols: List[str] = []
         self.preprocessor: Any = None
         self.health_metadata: Dict[str, Any] = {}
+        self.label_encoder: Any = None
+        self.task_decision: Dict[str, Any] = {}
+        self.raw_feature_names: List[str] = []
+        self.preprocessing_kind: str = "lite"
+        self.class_labels: List[str] = []
         
         # Execution Results
         self.model_pool: Dict[str, Any] = {}

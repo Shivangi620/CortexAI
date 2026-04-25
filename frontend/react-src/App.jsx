@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Layout } from "./components/Layout.jsx";
-import { ROUTES, getInitialRoute } from "./config/routes.js";
+import { getInitialRoute } from "./config/routes.js";
 import { createApiClient } from "./lib/api.js";
 import { safeParseJson, toCsvArray } from "./lib/format.js";
 import { usePolling } from "./hooks/usePolling.js";
@@ -28,9 +28,7 @@ export function App() {
   const [datasets, setDatasets] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [experiments, setExperiments] = useState([]);
-  const [notifications, setNotifications] = useState([]);
   const [workspaces, setWorkspaces] = useState([]);
-  const [workspaceLatest, setWorkspaceLatest] = useState(null);
   const [selectedDatasetId, setSelectedDatasetId] = useState(() => localStorage.getItem(STORAGE_KEYS.datasetId) || "");
   const [selectedJobId, setSelectedJobId] = useState(() => localStorage.getItem(STORAGE_KEYS.jobId) || "");
 
@@ -43,6 +41,7 @@ export function App() {
   const [datasetVersions, setDatasetVersions] = useState(null);
 
   const [forecast, setForecast] = useState(null);
+  const [trainingRegistryPreview, setTrainingRegistryPreview] = useState(null);
   const [trainMessage, setTrainMessage] = useState("");
   const [uploadMessage, setUploadMessage] = useState("");
   const [repairMessage, setRepairMessage] = useState("");
@@ -83,6 +82,13 @@ export function App() {
     predictMessage: "",
     futureResult: null,
     futureMessage: "",
+    scenarioContext: null,
+    scenarioResult: null,
+    scenarioMessage: "",
+    scenarioPacks: [],
+    scenarioPacksMessage: "",
+    ensembleResult: null,
+    ensembleMessage: "",
   });
 
   const [toolsState, setToolsState] = useState({
@@ -103,6 +109,7 @@ export function App() {
     selectedFeatureNames: [],
     trainGoal: "Balanced",
     trainMode: "Balanced",
+    trainTaskType: "",
     trainMetric: "",
     trainCvFolds: 5,
     trainPcaMode: "auto",
@@ -120,6 +127,7 @@ export function App() {
     driftWarningThreshold: 0.1,
     driftCriticalThreshold: 0.2,
     driftFeature: "",
+    runOriginFilter: "All",
     predictPayload: {},
     baseFeatures: {},
     sweepFeature: "",
@@ -131,6 +139,7 @@ export function App() {
     quicktrainTarget: "",
     quicktrainSelectedFeatures: [],
     quicktrainModels: "Decision Tree,Random Forest,Logistic Regression",
+    syntheticRowCount: "",
     nlPrompt: "",
     chatPrompt: "",
     workspaceName: "",
@@ -149,6 +158,35 @@ export function App() {
     mergeRightKey: "",
     mergeJoinType: "inner",
     ocrText: "",
+    scenarioMode: "payload",
+    scenarioRowIndex: 0,
+    scenarioFilters: "[]",
+    scenarioDefinitions: JSON.stringify(
+      [
+        {
+          name: "Upside Case",
+          description: "Increase one or two growth levers and compare delta.",
+          adjustments: { delta: {} },
+        },
+        {
+          name: "Downside Case",
+          description: "Stress-test the riskiest operating assumptions.",
+          adjustments: { delta: {} },
+        },
+      ],
+      null,
+      2,
+    ),
+    scenarioSweepFeature: "",
+    scenarioSweepValues: "0,1,2,3",
+    scenarioPackName: "",
+    scenarioPackDescription: "",
+    scenarioApprovedIds: "",
+    scenarioMaxChangePct: 35,
+    scenarioHardBounds: true,
+    scenarioBlockedFeatures: "",
+    ensembleJobIds: "",
+    ensembleStrategy: "voting",
   });
 
   const [uploadPreview, setUploadPreview] = useState([]);
@@ -162,21 +200,7 @@ export function App() {
 
   const api = useMemo(() => createApiClient(), []);
 
-  const selectedDataset = useMemo(
-    () => datasets.find((dataset) => dataset.id === selectedDatasetId) || null,
-    [datasets, selectedDatasetId]
-  );
-
-  const selectedJob = useMemo(
-    () => jobs.find((job) => job.id === selectedJobId) || null,
-    [jobs, selectedJobId]
-  );
-
-  const overviewStats = useMemo(() => {
-    const completed = jobs.filter((job) => job.status === "completed").length;
-    const training = jobs.filter((job) => job.status === "training").length;
-    return { completed, training };
-  }, [jobs]);
+  const selectedJob = useMemo(() => jobs.find((job) => job.id === selectedJobId) || null, [jobs, selectedJobId]);
 
   const patchForm = useCallback((keyOrObject, value) => {
     if (typeof keyOrObject === "object" && keyOrObject !== null) {
@@ -198,14 +222,12 @@ export function App() {
     setLoading(true);
     setGlobalError("");
     try {
-      const [datasetsPayload, jobsPayload, experimentsPayload, notificationsPayload, workspacesPayload, latestWorkspacePayload, metaStatusPayload] =
+      const [datasetsPayload, jobsPayload, experimentsPayload, workspacesPayload, metaStatusPayload] =
         await Promise.all([
           api("/api/datasets"),
           api("/api/jobs"),
           api("/api/experiments"),
-          api("/api/notifications"),
           api("/api/workspaces"),
-          api("/api/workspace/latest").catch(() => null),
           api("/api/meta/status").catch(() => null),
         ]);
 
@@ -214,9 +236,7 @@ export function App() {
       setDatasets(datasetRows);
       setJobs(jobRows);
       setExperiments(experimentsPayload || []);
-      setNotifications(notificationsPayload.notifications || []);
       setWorkspaces(workspacesPayload.workspaces || []);
-      setWorkspaceLatest(latestWorkspacePayload);
       setToolsState((current) => ({ ...current, metaStatus: metaStatusPayload }));
 
       if (!selectedDatasetId && datasetRows.length) setSelectedDatasetId(datasetRows[0].id);
@@ -240,7 +260,9 @@ export function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ dataset_id: selectedDatasetId, target_column: forms.targetColumn }),
         }).catch(() => null),
-        api(`/api/leakage/${selectedDatasetId}${forms.targetColumn ? `?target_column=${encodeURIComponent(forms.targetColumn)}` : ""}`).catch(() => null),
+        api(
+          `/api/leakage/${selectedDatasetId}${forms.targetColumn ? `?target_column=${encodeURIComponent(forms.targetColumn)}` : ""}`,
+        ).catch(() => null),
         api(`/api/dataset/${selectedDatasetId}/timeline`).catch(() => null),
         api(`/api/dataset/${selectedDatasetId}/lineage-graph`).catch(() => null),
         api(`/api/dataset/${selectedDatasetId}/versions`).catch(() => null),
@@ -259,9 +281,7 @@ export function App() {
         const currentTargetIsValid = current.targetColumn && profileColumns.includes(current.targetColumn);
         const nextTarget = currentTargetIsValid ? current.targetColumn : suggestedTarget || "";
         const nextRepairTarget =
-          current.repairTarget && profileColumns.includes(current.repairTarget)
-            ? current.repairTarget
-            : nextTarget;
+          current.repairTarget && profileColumns.includes(current.repairTarget) ? current.repairTarget : nextTarget;
         const nextQuicktrainTarget =
           current.quicktrainTarget && profileColumns.includes(current.quicktrainTarget)
             ? current.quicktrainTarget
@@ -270,12 +290,12 @@ export function App() {
           ? current.selectedFeatureNames.filter((feature) => profileColumns.includes(feature) && feature !== nextTarget)
           : [];
         const nextQuicktrainSelectedFeatures = Array.isArray(current.quicktrainSelectedFeatures)
-          ? current.quicktrainSelectedFeatures.filter((feature) => profileColumns.includes(feature) && feature !== nextQuicktrainTarget)
+          ? current.quicktrainSelectedFeatures.filter(
+              (feature) => profileColumns.includes(feature) && feature !== nextQuicktrainTarget,
+            )
           : [];
         const nextFutureFeature =
-          current.futureFeature && profileColumns.includes(current.futureFeature)
-            ? current.futureFeature
-            : "";
+          current.futureFeature && profileColumns.includes(current.futureFeature) ? current.futureFeature : "";
 
         if (
           nextTarget === current.targetColumn &&
@@ -310,20 +330,31 @@ export function App() {
     try {
       const status = await api(`/api/status/${selectedJobId}`);
       const isCompleted = status?.status === "completed";
-      const [shapSummary, permutationSummary, pipelineGraph, featureLineage, calibration, thresholds, trustHeatmap, recommendations, narration, driftHistory, driftSchedule] =
-        await Promise.all([
-          isCompleted ? api(`/api/shap/${selectedJobId}`).catch(() => null) : Promise.resolve(null),
-          isCompleted ? api(`/api/permutation/${selectedJobId}`).catch(() => null) : Promise.resolve(null),
-          api(`/api/pipeline/${selectedJobId}`).catch(() => null),
-          api(`/api/lineage/${selectedJobId}`).catch(() => null),
-          api(`/api/calibration/${selectedJobId}`).catch(() => null),
-          api(`/api/thresholds/${selectedJobId}`).catch(() => null),
-          api(`/api/trust/${selectedJobId}`).catch(() => null),
-          isCompleted ? api(`/api/recommend/${selectedJobId}`).catch(() => null) : Promise.resolve(null),
-          isCompleted ? api(`/api/narrate/${selectedJobId}`).catch(() => null) : Promise.resolve(null),
-          api(`/api/drift/${selectedJobId}/history`).catch(() => null),
-          api(`/api/drift/${selectedJobId}/schedule`).catch(() => null),
-        ]);
+      const [
+        shapSummary,
+        permutationSummary,
+        pipelineGraph,
+        featureLineage,
+        calibration,
+        thresholds,
+        trustHeatmap,
+        recommendations,
+        narration,
+        driftHistory,
+        driftSchedule,
+      ] = await Promise.all([
+        isCompleted ? api(`/api/shap/${selectedJobId}`).catch(() => null) : Promise.resolve(null),
+        isCompleted ? api(`/api/permutation/${selectedJobId}`).catch(() => null) : Promise.resolve(null),
+        api(`/api/pipeline/${selectedJobId}`).catch(() => null),
+        api(`/api/lineage/${selectedJobId}`).catch(() => null),
+        api(`/api/calibration/${selectedJobId}`).catch(() => null),
+        api(`/api/thresholds/${selectedJobId}`).catch(() => null),
+        api(`/api/trust/${selectedJobId}`).catch(() => null),
+        isCompleted ? api(`/api/recommend/${selectedJobId}`).catch(() => null) : Promise.resolve(null),
+        isCompleted ? api(`/api/narrate/${selectedJobId}`).catch(() => null) : Promise.resolve(null),
+        api(`/api/drift/${selectedJobId}/history`).catch(() => null),
+        api(`/api/drift/${selectedJobId}/schedule`).catch(() => null),
+      ]);
 
       setJobStatus(status);
       setResultsAssets({
@@ -367,6 +398,39 @@ export function App() {
     }
   }, [api, selectedJobId, forms.driftFeature]);
 
+  const loadScenarioContext = useCallback(async () => {
+    if (!selectedJobId) return;
+    try {
+      const payload = await api(`/api/scenario/context/${selectedJobId}`);
+      setMonitoringState((current) => ({
+        ...current,
+        scenarioContext: payload,
+      }));
+    } catch {
+      setMonitoringState((current) => ({
+        ...current,
+        scenarioContext: null,
+      }));
+    }
+  }, [api, selectedJobId]);
+
+  const loadScenarioPacks = useCallback(async () => {
+    if (!selectedJobId) return;
+    try {
+      const payload = await api(`/api/scenario-packs/${selectedJobId}`);
+      setMonitoringState((current) => ({
+        ...current,
+        scenarioPacks: payload.packs || [],
+      }));
+    } catch (error) {
+      setMonitoringState((current) => ({
+        ...current,
+        scenarioPacks: [],
+        scenarioPacksMessage: error.message,
+      }));
+    }
+  }, [api, selectedJobId]);
+
   useEffect(() => {
     const onPopState = () => setCurrentPath(getInitialRoute());
     window.addEventListener("popstate", onPopState);
@@ -405,33 +469,56 @@ export function App() {
   }, [selectedJobId]);
 
   useEffect(() => {
+    loadScenarioContext();
+  }, [selectedJobId]);
+
+  useEffect(() => {
+    loadScenarioPacks();
+  }, [selectedJobId]);
+
+  useEffect(() => {
     loadDriftTimeline();
   }, [selectedJobId, forms.driftFeature]);
 
   useEffect(() => {
-    if (!selectedDatasetId) return;
+    if (!selectedDatasetId) {
+      setForecast(null);
+      setTrainingRegistryPreview(null);
+      return;
+    }
     const timer = window.setTimeout(async () => {
+      const payload = {
+        dataset_id: selectedDatasetId,
+        target_column: forms.targetColumn,
+        goal: forms.trainGoal,
+        mode: forms.trainMode,
+        task_type: forms.trainTaskType,
+        eval_metric: forms.trainMetric,
+        selected_features: forms.selectedFeatureNames,
+        auto_clean: forms.trainAutoClean,
+        handle_imbalance: forms.trainHandleImbalance,
+        cv_folds: Number(forms.trainCvFolds) || 0,
+        pca_mode: forms.trainPcaMode,
+        pca_components: Number(forms.trainPcaComponents) || 0,
+      };
       try {
-        const payload = await api("/api/train/forecast", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            dataset_id: selectedDatasetId,
-            target_column: forms.targetColumn,
-            goal: forms.trainGoal,
-            mode: forms.trainMode,
-            eval_metric: forms.trainMetric,
-            selected_features: forms.selectedFeatureNames,
-            auto_clean: forms.trainAutoClean,
-            handle_imbalance: forms.trainHandleImbalance,
-            cv_folds: Number(forms.trainCvFolds) || 0,
-            pca_mode: forms.trainPcaMode,
-            pca_components: Number(forms.trainPcaComponents) || 0,
+        const [forecastResult, registryResult] = await Promise.allSettled([
+          api("/api/train/forecast", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
           }),
-        });
-        setForecast(payload);
+          api("/api/train/model-registry", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          }),
+        ]);
+        setForecast(forecastResult.status === "fulfilled" ? forecastResult.value : null);
+        setTrainingRegistryPreview(registryResult.status === "fulfilled" ? registryResult.value : null);
       } catch {
         setForecast(null);
+        setTrainingRegistryPreview(null);
       }
     }, 350);
     return () => window.clearTimeout(timer);
@@ -441,7 +528,9 @@ export function App() {
     forms.targetColumn,
     forms.trainGoal,
     forms.trainMode,
+    forms.trainTaskType,
     forms.trainMetric,
+    forms.selectedFeatureNames,
     forms.trainAutoClean,
     forms.trainHandleImbalance,
     forms.trainCvFolds,
@@ -455,7 +544,6 @@ export function App() {
   const toggleTheme = useCallback(() => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   }, []);
-
 
   async function handleUpload(event) {
     if (event && event.preventDefault) event.preventDefault();
@@ -528,21 +616,6 @@ export function App() {
       await refreshCoreData();
     } catch (error) {
       setGlobalError(`Delete failed: ${error.message}`);
-    }
-  }
-
-  async function handleResumeLastRun() {
-    try {
-      const payload = await api("/api/workspaces/resume");
-      if (payload.job_id) {
-        setSelectedJobId(payload.job_id);
-        if (payload.dataset_id) setSelectedDatasetId(payload.dataset_id);
-        setGlobalMessage("Resumed last run context.");
-      } else {
-        setGlobalError(payload.error || "No run available to resume.");
-      }
-    } catch (error) {
-      setGlobalError(`Resume failed: ${error.message}`);
     }
   }
 
@@ -623,8 +696,18 @@ export function App() {
 
   async function handleTrain(event) {
     event.preventDefault();
-    if (!selectedDatasetId) {
+    await startTrainingForDataset(selectedDatasetId);
+  }
+
+  async function startTrainingForDataset(datasetIdOverride, sourceLabel = "") {
+    const datasetId = datasetIdOverride || selectedDatasetId;
+    if (!datasetId) {
       setTrainMessage("Select a dataset first.");
+      return;
+    }
+    if (!forms.targetColumn) {
+      setTrainMessage("Choose a target column before training.");
+      setCurrentPath("/overview");
       return;
     }
     try {
@@ -632,10 +715,11 @@ export function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          dataset_id: selectedDatasetId,
+          dataset_id: datasetId,
           target_column: forms.targetColumn,
           goal: forms.trainGoal,
           mode: forms.trainMode,
+          task_type: forms.trainTaskType,
           eval_metric: forms.trainMetric,
           selected_features: forms.selectedFeatureNames,
           auto_clean: forms.trainAutoClean,
@@ -650,8 +734,9 @@ export function App() {
           export_report: forms.exportReport,
         }),
       });
-      setTrainMessage(payload.error || `Training started: ${payload.job_id}`);
+      setTrainMessage(payload.error || `${sourceLabel ? `${sourceLabel}: ` : ""}Training started: ${payload.job_id}`);
       if (payload.job_id) {
+        setSelectedDatasetId(datasetId);
         setSelectedJobId(payload.job_id);
         setCurrentPath("/training");
         await refreshCoreData();
@@ -664,7 +749,11 @@ export function App() {
   async function compareExperiments() {
     const ids = toCsvArray(forms.compareExperimentIds);
     if (!ids.length) {
-      setTrackingState((current) => ({ ...current, compareResult: null, compareMessage: "Select at least one run to compare." }));
+      setTrackingState((current) => ({
+        ...current,
+        compareResult: null,
+        compareMessage: "Select at least one run to compare.",
+      }));
       return;
     }
     try {
@@ -677,11 +766,17 @@ export function App() {
 
   async function diffExperiments() {
     if (!forms.diffRunA || !forms.diffRunB) {
-      setTrackingState((current) => ({ ...current, diffResult: null, diffMessage: "Choose two runs before calculating a diff." }));
+      setTrackingState((current) => ({
+        ...current,
+        diffResult: null,
+        diffMessage: "Choose two runs before calculating a diff.",
+      }));
       return;
     }
     try {
-      const payload = await api(`/api/experiments/diff?run_a=${encodeURIComponent(forms.diffRunA)}&run_b=${encodeURIComponent(forms.diffRunB)}`);
+      const payload = await api(
+        `/api/experiments/diff?run_a=${encodeURIComponent(forms.diffRunA)}&run_b=${encodeURIComponent(forms.diffRunB)}`,
+      );
       setTrackingState((current) => ({ ...current, diffResult: payload, diffMessage: "Diff ready." }));
     } catch (error) {
       setTrackingState((current) => ({ ...current, diffResult: null, diffMessage: error.message }));
@@ -690,7 +785,11 @@ export function App() {
 
   async function fetchNotes() {
     if (!forms.noteEntityType || !forms.noteEntityId) {
-      setTrackingState((current) => ({ ...current, notesResult: null, notesMessage: "Choose an entity type and ID first." }));
+      setTrackingState((current) => ({
+        ...current,
+        notesResult: null,
+        notesMessage: "Choose an entity type and ID first.",
+      }));
       return;
     }
     try {
@@ -704,7 +803,10 @@ export function App() {
   async function saveNote(event) {
     event.preventDefault();
     if (!forms.noteEntityType || !forms.noteEntityId || !String(forms.noteText || "").trim()) {
-      setTrackingState((current) => ({ ...current, notesMessage: "Entity type, entity ID, and note text are required." }));
+      setTrackingState((current) => ({
+        ...current,
+        notesMessage: "Entity type, entity ID, and note text are required.",
+      }));
       return;
     }
     try {
@@ -766,11 +868,33 @@ export function App() {
       setMonitoringState((current) => ({ ...current, retrainMessage: "Select a job and file first." }));
       return;
     }
+    const retrainPlan = monitoringState.driftResult?.retrain_recommendation || null;
     const formData = new FormData();
     formData.append("file", file);
+    if (retrainPlan?.recommended_goal) formData.append("goal_override", retrainPlan.recommended_goal);
+    if (retrainPlan?.recommended_mode) formData.append("mode_override", retrainPlan.recommended_mode);
+    formData.append(
+      "launch_context_json",
+      JSON.stringify({
+        source: "drift_recommendation",
+        source_job_id: selectedJobId,
+        message: retrainPlan?.message || "",
+        current_model: retrainPlan?.current_model || "",
+        historical_winner: retrainPlan?.historical_winner || "",
+        candidate_models: retrainPlan?.candidate_models || [],
+        memory_confidence: retrainPlan?.memory_confidence ?? 0,
+        memory_applied: Boolean(retrainPlan?.memory_applied),
+        parent_score: retrainPlan?.current_score ?? null,
+        parent_validation_gap: retrainPlan?.current_validation_gap ?? null,
+        metric_name: retrainPlan?.metric_name || "",
+      }),
+    );
     try {
       const payload = await api(`/api/drift/${selectedJobId}/retrain`, { method: "POST", body: formData });
-      setMonitoringState((current) => ({ ...current, retrainMessage: payload.error || "Retrain launched." }));
+      const launchMessage =
+        payload.error ||
+        `Retrain launched using ${payload.goal || retrainPlan?.recommended_goal || "Balanced"} / ${payload.mode || retrainPlan?.recommended_mode || "Balanced"}.`;
+      setMonitoringState((current) => ({ ...current, retrainMessage: launchMessage }));
       if (payload.job_id) setSelectedJobId(payload.job_id);
       if (payload.dataset_id) setSelectedDatasetId(payload.dataset_id);
       await refreshCoreData();
@@ -824,9 +948,7 @@ export function App() {
         body: JSON.stringify({
           job_id: selectedJobId,
           base_features: safeParseJson(
-            typeof forms.baseFeatures === "string"
-              ? forms.baseFeatures
-              : JSON.stringify(forms.baseFeatures || {}),
+            typeof forms.baseFeatures === "string" ? forms.baseFeatures : JSON.stringify(forms.baseFeatures || {}),
             {},
           ),
           sweep_feature: forms.sweepFeature,
@@ -836,6 +958,215 @@ export function App() {
       setMonitoringState((curr) => ({ ...curr, futureResult: payload, futureMessage: "Future sweep ready." }));
     } catch (error) {
       setMonitoringState((curr) => ({ ...curr, futureMessage: error.message }));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runScenarioSimulator(eventOrPayload) {
+    if (eventOrPayload && eventOrPayload.preventDefault) eventOrPayload.preventDefault();
+    if (!selectedJobId) {
+      setMonitoringState((curr) => ({ ...curr, scenarioMessage: "Select a completed run first." }));
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const overridePayload =
+        eventOrPayload && !eventOrPayload.preventDefault && typeof eventOrPayload === "object" ? eventOrPayload : null;
+      const payload = await api(`/api/scenarios/${selectedJobId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base_mode: overridePayload?.base_mode || forms.scenarioMode,
+          row_index: overridePayload?.row_index ?? (Number(forms.scenarioRowIndex) || 0),
+          base_payload:
+            overridePayload?.base_payload ||
+            safeParseJson(
+              typeof forms.predictPayload === "string"
+                ? forms.predictPayload
+                : JSON.stringify(forms.predictPayload || {}),
+              {},
+            ),
+          filters: overridePayload?.filters || safeParseJson(forms.scenarioFilters, []),
+          scenarios: overridePayload?.scenarios || safeParseJson(forms.scenarioDefinitions, []),
+          sweep_feature: overridePayload?.sweep_feature || forms.scenarioSweepFeature,
+          sweep_values: overridePayload?.sweep_values || toCsvArray(forms.scenarioSweepValues),
+          approval_policy: {
+            max_numeric_delta_ratio: Math.max(parseFloat(forms.scenarioMaxChangePct || 35) || 35, 0) / 100,
+            hard_bounds: Boolean(forms.scenarioHardBounds),
+            blocked_features: toCsvArray(forms.scenarioBlockedFeatures),
+          },
+          approved_scenarios: toCsvArray(forms.scenarioApprovedIds),
+          enforce_guardrails: true,
+        }),
+      });
+      const reviewCount = Number(payload?.guardrail_summary?.review_required || 0);
+      const blockedCount = Number(payload?.guardrail_summary?.blocked || 0);
+      setMonitoringState((curr) => ({
+        ...curr,
+        scenarioResult: payload,
+        scenarioMessage:
+          blockedCount > 0
+            ? `${blockedCount} scenario${blockedCount === 1 ? "" : "s"} blocked by guardrails.${reviewCount ? ` ${reviewCount} still need approval.` : ""}`
+            : reviewCount > 0
+              ? `${reviewCount} scenario${reviewCount === 1 ? "" : "s"} need approval before execution.`
+              : "Scenario simulator updated in realtime.",
+      }));
+    } catch (error) {
+      setMonitoringState((curr) => ({
+        ...curr,
+        scenarioResult: null,
+        scenarioMessage: error.message,
+      }));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function saveScenarioPack() {
+    if (!selectedJobId) {
+      setMonitoringState((curr) => ({ ...curr, scenarioPacksMessage: "Select a completed run first." }));
+      return;
+    }
+
+    try {
+      const payload = await api(`/api/scenario-packs/${selectedJobId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: forms.scenarioPackName,
+          description: forms.scenarioPackDescription,
+          base_mode: forms.scenarioMode,
+          row_index: forms.scenarioMode === "row" ? Number(forms.scenarioRowIndex) || 0 : null,
+          base_payload: safeParseJson(
+            typeof forms.predictPayload === "string"
+              ? forms.predictPayload
+              : JSON.stringify(forms.predictPayload || {}),
+            {},
+          ),
+          filters: safeParseJson(forms.scenarioFilters, []),
+          scenarios: safeParseJson(forms.scenarioDefinitions, []),
+          sweep_feature: forms.scenarioSweepFeature,
+          sweep_values: toCsvArray(forms.scenarioSweepValues),
+          approval_policy: {
+            max_numeric_delta_ratio: Math.max(parseFloat(forms.scenarioMaxChangePct || 35) || 35, 0) / 100,
+            hard_bounds: Boolean(forms.scenarioHardBounds),
+            blocked_features: toCsvArray(forms.scenarioBlockedFeatures),
+          },
+          approved_scenarios: toCsvArray(forms.scenarioApprovedIds),
+        }),
+      });
+      setMonitoringState((curr) => ({
+        ...curr,
+        scenarioPacksMessage: `Saved pack "${payload.name}".`,
+      }));
+      await loadScenarioPacks();
+    } catch (error) {
+      setMonitoringState((curr) => ({
+        ...curr,
+        scenarioPacksMessage: error.message,
+      }));
+    }
+  }
+
+  function applyScenarioPack(pack) {
+    if (!pack) return;
+    patchForm({
+      scenarioPackName: pack.name || "",
+      scenarioPackDescription: pack.description || "",
+      scenarioMode: pack.base_mode || "payload",
+      scenarioRowIndex: pack.row_index ?? 0,
+      predictPayload: pack.base_payload || {},
+      scenarioFilters: JSON.stringify(pack.filters || [], null, 2),
+      scenarioDefinitions: JSON.stringify(pack.scenarios || [], null, 2),
+      scenarioSweepFeature: pack.sweep_feature || "",
+      scenarioSweepValues: Array.isArray(pack.sweep_values) ? pack.sweep_values.join(",") : "",
+      scenarioMaxChangePct: pack.approval_policy?.max_numeric_delta_ratio
+        ? String(Math.round(Number(pack.approval_policy.max_numeric_delta_ratio) * 100))
+        : "35",
+      scenarioHardBounds: pack.approval_policy?.hard_bounds !== false,
+      scenarioBlockedFeatures: Array.isArray(pack.approval_policy?.blocked_features)
+        ? pack.approval_policy.blocked_features.join(",")
+        : "",
+      scenarioApprovedIds: Array.isArray(pack.approved_scenarios) ? pack.approved_scenarios.join(",") : "",
+    });
+    setMonitoringState((curr) => ({
+      ...curr,
+      scenarioPacksMessage: `Loaded pack "${pack.name}".`,
+    }));
+  }
+
+  function applySuggestedScenarios() {
+    const suggestions = monitoringState.scenarioResult?.auto_suggestions || [];
+    if (!suggestions.length) return;
+    patchForm(
+      "scenarioDefinitions",
+      JSON.stringify(
+        suggestions.map((item) => item.scenario),
+        null,
+        2,
+      ),
+    );
+    setMonitoringState((curr) => ({
+      ...curr,
+      scenarioMessage: "Applied auto-generated uplift and low-risk scenarios.",
+    }));
+  }
+
+  function approveScenarioReviews() {
+    const ids = (monitoringState.scenarioResult?.scenarios || [])
+      .filter((item) => item.approval_status === "review_required")
+      .map((item) => item.id)
+      .filter(Boolean);
+    patchForm("scenarioApprovedIds", ids.join(","));
+    setMonitoringState((curr) => ({
+      ...curr,
+      scenarioMessage: ids.length
+        ? "Review-required scenarios marked approved. Run the simulator again to execute them."
+        : "No review approvals are pending.",
+    }));
+  }
+
+  async function buildEnsemble() {
+    const selectedIds = Array.from(
+      new Set(toCsvArray(forms.ensembleJobIds).concat(selectedJobId ? [selectedJobId] : [])),
+    ).filter(Boolean);
+
+    if (selectedIds.length < 2) {
+      setMonitoringState((curr) => ({
+        ...curr,
+        ensembleMessage: "Pick at least two completed jobs for the ensemble.",
+      }));
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const payload = await api("/api/ensemble", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          job_ids: selectedIds,
+          strategy: forms.ensembleStrategy,
+          dataset_id: selectedDatasetId || undefined,
+        }),
+      });
+      setMonitoringState((curr) => ({
+        ...curr,
+        ensembleResult: payload.error ? null : payload,
+        ensembleMessage: payload.error || "Ensemble built and registered as a completed run.",
+      }));
+      if (payload.job_id) {
+        setSelectedJobId(payload.job_id);
+      }
+      await refreshCoreData();
+    } catch (error) {
+      setMonitoringState((curr) => ({
+        ...curr,
+        ensembleResult: null,
+        ensembleMessage: error.message,
+      }));
     } finally {
       setLoading(false);
     }
@@ -972,25 +1303,75 @@ export function App() {
   }
 
   async function syntheticExpand() {
+    if (!selectedDatasetId) {
+      patchTools("synthetic", "Select a dataset first.");
+      return;
+    }
+    setLoading(true);
     try {
-      const payload = await api(`/api/synthetic/${selectedDatasetId}`, { method: "POST" });
-      patchTools("synthetic", payload.error || "Synthetic dataset created.", payload);
-      if (payload.new_dataset_id) {
-        refreshCoreData();
-        setSelectedDatasetId(payload.new_dataset_id);
+      const requestedRows = String(forms.syntheticRowCount || "").trim();
+      const query = requestedRows ? `?n_rows=${encodeURIComponent(requestedRows)}` : "";
+      const payload = await api(`/api/synthetic/${selectedDatasetId}${query}`, { method: "POST" });
+      if (payload.error) {
+        patchTools("synthetic", payload.error, payload);
+        return;
       }
+
+      let mergedPayload = payload;
+      let message = "Synthetic dataset created.";
+
+      if (payload.new_dataset_id) {
+        setSelectedDatasetId(payload.new_dataset_id);
+        await refreshCoreData();
+
+        try {
+          const judgePayload = await api(`/api/synthetic/judge/${payload.new_dataset_id}`);
+          mergedPayload = {
+            ...payload,
+            ...judgePayload,
+          };
+          message = judgePayload.error
+            ? `Synthetic dataset created, but judge review is unavailable: ${judgePayload.error}`
+            : "Synthetic dataset created and judged automatically.";
+        } catch (judgeError) {
+          message = `Synthetic dataset created, but judge review failed: ${judgeError.message}`;
+        }
+      }
+
+      patchTools("synthetic", message, mergedPayload);
+    } catch (error) {
+      patchTools("synthetic", error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function syntheticJudge() {
+    if (!selectedDatasetId) {
+      patchTools("synthetic", "Select a dataset first.");
+      return;
+    }
+    try {
+      const payload = await api(`/api/synthetic/judge/${selectedDatasetId}`);
+      setToolsState((current) => ({
+        ...current,
+        messages: { ...current.messages, synthetic: "Synthetic judge completed." },
+        outputs: {
+          ...current.outputs,
+          synthetic: {
+            ...(current.outputs.synthetic || {}),
+            ...payload,
+          },
+        },
+      }));
     } catch (error) {
       patchTools("synthetic", error.message);
     }
   }
 
-  async function syntheticJudge() {
-    try {
-      const payload = await api(`/api/synthetic/judge/${selectedDatasetId}`);
-      patchTools("synthetic", "Synthetic judge completed.", payload);
-    } catch (error) {
-      patchTools("synthetic", error.message);
-    }
+  async function trainSyntheticDataset() {
+    const syntheticDatasetId = toolsState.outputs.synthetic?.new_dataset_id || selectedDatasetId;
+    await startTrainingForDataset(syntheticDatasetId, "Synthetic dataset");
   }
 
   async function zeroShot() {
@@ -1013,6 +1394,10 @@ export function App() {
 
   async function parseIntent(event) {
     event.preventDefault();
+    if (!String(forms.nlPrompt || "").trim()) {
+      patchTools("intent", "Describe the ML goal first.");
+      return;
+    }
     try {
       const payload = await api("/api/nl/intent", {
         method: "POST",
@@ -1027,6 +1412,14 @@ export function App() {
 
   async function chat(event) {
     event.preventDefault();
+    if (!selectedJobId) {
+      patchTools("chat", "Select a run first.");
+      return;
+    }
+    if (!String(forms.chatPrompt || "").trim()) {
+      patchTools("chat", "Ask a question first.");
+      return;
+    }
     try {
       const payload = await api("/api/chat", {
         method: "POST",
@@ -1115,20 +1508,14 @@ export function App() {
   if (currentPath === "/overview") {
     page = (
       <OverviewPage
-        notifications={notifications}
         jobs={jobs}
-        experiments={experiments}
-        workspaces={workspaces}
-        overviewStats={overviewStats}
-        selectedJob={selectedJob}
-        workspaceLatest={workspaceLatest}
         datasets={datasets}
         selectedDatasetId={selectedDatasetId}
-        setSelectedDatasetId={setSelectedDatasetId}
         datasetProfile={datasetProfile}
         datasetDetect={datasetDetect}
         loading={loading}
         forecast={forecast}
+        trainingRegistryPreview={trainingRegistryPreview}
         forms={forms}
         patchForm={patchForm}
         uploadRef={uploadRef}
@@ -1137,37 +1524,24 @@ export function App() {
         uploadPreview={uploadPreview}
         ingestSummary={ingestSummary}
         handleImportSource={handleImportSource}
-        handleArchive={handleArchive}
-        handleDeleteDataset={handleDeleteDataset}
-        handleResumeLastRun={handleResumeLastRun}
         handleTrain={handleTrain}
         trainMessage={trainMessage}
-        handleMergePreview={handleMergePreview}
-        handleMergeApply={handleMergeApply}
-        mergeState={mergeState}
         handleOcrReview={handleOcrReview}
       />
     );
-
   } else if (currentPath === "/data") {
     page = (
       <DataPage
         datasets={datasets}
-        selectedDataset={selectedDataset}
         datasetProfile={datasetProfile}
         datasetHealth={datasetHealth}
         datasetDetect={datasetDetect}
         datasetLeakage={datasetLeakage}
-        datasetTimeline={datasetTimeline}
         datasetLineage={datasetLineage}
         datasetVersions={datasetVersions}
         loading={loading}
         forms={forms}
         patchForm={patchForm}
-        uploadRef={uploadRef}
-        handleUpload={handleUpload}
-        handleImportSource={handleImportSource}
-        uploadMessage={uploadMessage}
         repairPreview={repairPreview}
         repairApply={repairApply}
         repairMessage={repairMessage}
@@ -1181,20 +1555,20 @@ export function App() {
     page = (
       <TrainingPage
         forms={forms}
-        patchForm={patchForm}
         forecast={forecast}
-        trainMessage={trainMessage}
-        handleTrain={handleTrain}
+        trainingRegistryPreview={trainingRegistryPreview}
         jobs={jobs}
         jobStatus={jobStatus}
-        datasetColumns={datasetProfile?.columns || []}
       />
     );
   } else if (currentPath === "/results") {
     page = (
       <ResultsPage
         results={jobStatus?.results}
+        launchContext={jobStatus?.config?.launch_context}
+        jobs={jobs}
         selectedJobId={selectedJobId}
+        scenarioResult={monitoringState.scenarioResult}
         {...resultsAssets}
       />
     );
@@ -1252,6 +1626,7 @@ export function App() {
         quicktrain={quicktrain}
         syntheticExpand={syntheticExpand}
         syntheticJudge={syntheticJudge}
+        trainSyntheticDataset={trainSyntheticDataset}
         zeroShot={zeroShot}
         metaInsights={metaInsights}
         parseIntent={parseIntent}
@@ -1270,31 +1645,31 @@ export function App() {
         futureResult={monitoringState.futureResult}
         futureMessage={monitoringState.futureMessage}
         handleFutureSweep={handleFutureSweep}
+        scenarioContext={monitoringState.scenarioContext}
+        loadScenarioContext={loadScenarioContext}
+        runScenarioSimulator={runScenarioSimulator}
+        scenarioResult={monitoringState.scenarioResult}
+        scenarioMessage={monitoringState.scenarioMessage}
+        scenarioPacks={monitoringState.scenarioPacks}
+        scenarioPacksMessage={monitoringState.scenarioPacksMessage}
+        saveScenarioPack={saveScenarioPack}
+        applyScenarioPack={applyScenarioPack}
+        applySuggestedScenarios={applySuggestedScenarios}
+        approveScenarioReviews={approveScenarioReviews}
         goalSeeker={monitoringState.goalSeeker}
         goalSeekerMessage={monitoringState.goalSeekerMessage}
         getGoalSeeker={getGoalSeeker}
+        buildEnsemble={buildEnsemble}
+        ensembleResult={monitoringState.ensembleResult}
+        ensembleMessage={monitoringState.ensembleMessage}
+        jobs={jobs}
         isClassification={jobStatus?.results?.is_classification}
       />
     );
   }
 
   return (
-    <Layout
-      currentPath={currentPath}
-      datasets={datasets}
-      jobs={jobs}
-      selectedDataset={selectedDataset}
-      selectedJob={selectedJob}
-      selectedDatasetId={selectedDatasetId}
-      selectedJobId={selectedJobId}
-      setSelectedDatasetId={setSelectedDatasetId}
-      setSelectedJobId={setSelectedJobId}
-      refresh={refreshCoreData}
-      loading={loading}
-      metaStatus={toolsState.metaStatus}
-      theme={theme}
-      toggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-    >
+    <Layout currentPath={currentPath} datasets={datasets} jobs={jobs} theme={theme} toggleTheme={toggleTheme}>
       {globalError ? <div className="message message--warning">{globalError}</div> : null}
       {page}
     </Layout>

@@ -1,0 +1,6 @@
+frontend/static/
+node_modules/
+venv/
+backend/runs/
+backend/tmp/
+tests/data/generated/

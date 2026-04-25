@@ -1,3 +1,10 @@
+"""
+Legacy Streamlit Drift Monitor page for CODIN compatibility workflows.
+
+The primary product UI is now the React studio served by FastAPI.
+"""
+
+import json
 import pandas as pd
 import requests
 import streamlit as st
@@ -13,7 +20,7 @@ from ui_shell import (
     sync_workspace_query_params,
 )
 
-st.set_page_config(page_title="Drift Monitor", page_icon="📉", layout="wide")
+st.set_page_config(page_title="Legacy Drift Monitor - CODIN", page_icon="📉", layout="wide")
 
 
 def get_json(path: str, timeout: int = 20):
@@ -46,6 +53,7 @@ render_page_shell(
     accent="analysis",
 )
 render_workspace_banner()
+st.info(f"Primary React studio: {API_URL}/monitoring")
 render_section_intro(
     "Shift Detection",
     "This page pairs detection, cadence management, history, and retraining so drift handling stays operational instead of fragmented.",
@@ -74,6 +82,8 @@ if dataset_id:
     st.markdown("</div>", unsafe_allow_html=True)
 
 schedule_payload = get_json(f"/drift/{job_id}/schedule")
+drift_data = st.session_state.get("drift_result") or {}
+retrain_recommendation = drift_data.get("retrain_recommendation", {}) if isinstance(drift_data, dict) else {}
 
 upload_col, retrain_col = st.columns(2)
 
@@ -97,13 +107,44 @@ with upload_col:
 with retrain_col:
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.markdown("### 🔁 One-Click Retrain")
+    if retrain_recommendation:
+        recommended_goal = retrain_recommendation.get("recommended_goal", "Balanced")
+        recommended_mode = retrain_recommendation.get("recommended_mode", "Balanced")
+        current_model = retrain_recommendation.get("current_model", "—")
+        historical_winner = retrain_recommendation.get("historical_common_winner", "—")
+        st.info(
+            f"Recommended lane: {recommended_goal} / {recommended_mode}\n\n"
+            f"Current model: {current_model} • Historical winner: {historical_winner}"
+        )
+        if retrain_recommendation.get("message"):
+            st.caption(retrain_recommendation["message"])
+        candidate_models = retrain_recommendation.get("candidate_models", []) or []
+        if candidate_models:
+            st.caption(f"Challenger set: {', '.join(candidate_models[:6])}")
+    else:
+        st.caption("Run a drift analysis first to unlock the recommended retrain lane and challenger set.")
     retrain_file = st.file_uploader("Upload drifted CSV to retrain", type=["csv"], key="drift_retrain_file")
     if retrain_file and st.button("🚀 Retrain On Drifted Dataset", width="stretch"):
         with st.spinner("Creating dataset version and starting training..."):
             try:
+                launch_context = {
+                    "source": "drift_recommendation",
+                    "parent_job_id": job_id,
+                    "recommended_goal": retrain_recommendation.get("recommended_goal"),
+                    "recommended_mode": retrain_recommendation.get("recommended_mode"),
+                    "message": retrain_recommendation.get("message"),
+                    "current_model": retrain_recommendation.get("current_model"),
+                    "historical_winner": retrain_recommendation.get("historical_common_winner"),
+                    "candidate_models": retrain_recommendation.get("candidate_models", []) or [],
+                }
                 resp = requests.post(
                     f"{API_URL}/drift/{job_id}/retrain",
                     files={"file": (retrain_file.name, retrain_file.getvalue(), "text/csv")},
+                    data={
+                        "goal_override": retrain_recommendation.get("recommended_goal", ""),
+                        "mode_override": retrain_recommendation.get("recommended_mode", ""),
+                        "launch_context_json": json.dumps(launch_context),
+                    },
                     timeout=120,
                 )
                 retrain_payload = resp.json()
@@ -118,11 +159,17 @@ with retrain_col:
                 st.session_state["profile"] = retrain_payload["profile"]
             st.session_state["job_id"] = retrain_payload.get("job_id")
             sync_workspace_query_params()
-            st.success(f"Started retraining job `{retrain_payload.get('job_id', '')[:8]}` on the drifted dataset.")
+            if retrain_recommendation:
+                st.success(
+                    f"Started retraining job `{retrain_payload.get('job_id', '')[:8]}` "
+                    f"using the recommended lane {retrain_recommendation.get('recommended_goal', 'Balanced')} / "
+                    f"{retrain_recommendation.get('recommended_mode', 'Balanced')}."
+                )
+            else:
+                st.success(f"Started retraining job `{retrain_payload.get('job_id', '')[:8]}` on the drifted dataset.")
             st.page_link("pages/3_Training_Lab.py", label="Open Live Training", icon="🧪")
     st.markdown("</div>", unsafe_allow_html=True)
 
-drift_data = st.session_state.get("drift_result")
 if drift_data:
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     if drift_data.get("error"):
@@ -156,6 +203,19 @@ if drift_data:
             alert_cols[1].metric("Warning PSI", thresholds.get("warning_psi", "—"))
             alert_cols[2].metric("Critical PSI", thresholds.get("critical_psi", "—"))
             st.caption(alert_summary.get("recommended_action", ""))
+
+        if retrain_recommendation:
+            st.markdown("### 🧭 Retrain Recommendation")
+            rec1, rec2, rec3, rec4 = st.columns(4)
+            rec1.metric("Goal", retrain_recommendation.get("recommended_goal", "—"))
+            rec2.metric("Mode", retrain_recommendation.get("recommended_mode", "—"))
+            rec3.metric("Current Winner", retrain_recommendation.get("current_model", "—"))
+            rec4.metric("Historical Winner", retrain_recommendation.get("historical_common_winner", "—"))
+            if retrain_recommendation.get("message"):
+                st.caption(retrain_recommendation["message"])
+            candidate_models = retrain_recommendation.get("candidate_models", []) or []
+            if candidate_models:
+                st.write("Challenger models:", ", ".join(candidate_models[:8]))
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Drift Score", f"{drift_score}%")

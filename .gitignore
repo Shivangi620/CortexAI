@@ -1,11 +1,19 @@
 venv/
+.venv/
 node_modules/
 __pycache__/
 *.pyc
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.eslintcache
 .coverage
 .DS_Store
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
 
 # Runtime/state artifacts
 automl_studio.db
@@ -23,6 +31,7 @@ backend/tmp/
 runs/
 backend/runs/
 frontend/static/
+tests/data/generated/
 
 # Data files
 *.csv

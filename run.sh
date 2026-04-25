@@ -1,10 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+# Supported local launcher for Linux/macOS.
+# Optional:
+#   CODIN_RUN_QUALITY=1  -> run the repo quality gate before startup
+#   CODIN_SYNC_DEPS=1    -> refresh Python dependencies even if venv already exists
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "Starting CODIN Neural Studio..."
+echo "Starting Inferyx..."
 
 # ── Trap defined FIRST so Ctrl+C always cleans up ────────────────────────────
 CELERY_PID=""
@@ -25,13 +30,27 @@ cleanup() {
 trap cleanup INT TERM
 
 # ── Virtual Environment ───────────────────────────────────────────────────────
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required to run the studio."
+    exit 1
+fi
+
+CODIN_RUN_QUALITY="${CODIN_RUN_QUALITY:-0}"
+CODIN_SYNC_DEPS="${CODIN_SYNC_DEPS:-0}"
+
 if [[ ! -d "venv" ]]; then
     echo "Creating virtual environment..."
     python3 -m venv venv
     source venv/bin/activate
-    pip install -r requirements.txt
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
 else
     source venv/bin/activate
+    if [[ "$CODIN_SYNC_DEPS" == "1" ]]; then
+        echo "Refreshing Python dependencies..."
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements.txt
+    fi
 fi
 
 export PYTHONPATH="$SCRIPT_DIR/backend:${PYTHONPATH:-}"
@@ -52,26 +71,42 @@ if command -v npm >/dev/null 2>&1; then
             npm install
         fi
     fi
-    echo "Building React frontend bundle..."
-    npm run build:frontend
+    if [[ "$CODIN_RUN_QUALITY" == "1" ]]; then
+        echo "Running repo quality gate before startup..."
+        npm run quality
+    else
+        echo "Building React frontend bundle..."
+        npm run build:frontend
+    fi
 else
-    echo "❌ npm is required to build the React frontend."
+    echo "npm is required to build the React frontend."
     exit 1
 fi
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
+if ! command -v redis-cli >/dev/null 2>&1 || ! command -v redis-server >/dev/null 2>&1; then
+    echo "Redis is required. Install redis-cli and redis-server, then run this script again."
+    echo "On Ubuntu/Debian: sudo apt install redis-server"
+    exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required for the backend readiness check."
+    exit 1
+fi
+
 echo "Starting Redis..."
 if ! redis-cli ping &>/dev/null; then
     LC_ALL=C redis-server --daemonize yes
     sleep 1
     if ! redis-cli ping &>/dev/null; then
-        echo "❌ Redis failed to start. Install with: sudo apt install redis-server"
+        echo "Redis failed to start. Install with: sudo apt install redis-server"
         exit 1
     fi
     REDIS_STARTED_BY_SCRIPT="true"
-    echo "✅ Redis is up."
+    echo "Redis is up."
 else
-    echo "✅ Redis already running."
+    echo "Redis already running."
 fi
 
 # ── Celery Worker — must run from backend/ dir ───────────────────────────────
@@ -80,8 +115,6 @@ cd "$SCRIPT_DIR/backend"
 python -m celery -A core.worker.celery_app worker --loglevel=warning --concurrency=2 &
 CELERY_PID=$!
 sleep 1
-# streamlit
-#streamlit run ../frontend/ui/app.py --server.headless=true --server.enableCORS=false --server.runOnSave=true --port 8502
 # ── FastAPI Backend ───────────────────────────────────────────────────────────
 echo "Starting FastAPI Backend..."
 python -m uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 600 &
@@ -95,16 +128,18 @@ for i in {1..20}; do
         break
     fi
     if [ "$i" -eq 20 ]; then
-        echo "⚠️  Backend did not start in time. Check for errors above."
+        echo "Backend did not start in time. Check for errors above."
     fi
     sleep 1
 done
 
 echo ""
 echo "================================================"
-echo "  CODIN Neural Studio is live!"
+echo "  Inferyx is live!"
 echo "  Frontend + API:  http://localhost:8000"
 echo "  Studio Home:     http://localhost:8000/overview"
+echo "  Results Room:    http://localhost:8000/results"
+echo "  Advanced Lab:    http://localhost:8000/tools"
 echo "  API Docs:        http://localhost:8000/docs"
 echo "  Press [CTRL+C] to stop all services."
 echo "================================================"

@@ -1,8 +1,13 @@
+"""
+Legacy Streamlit Home page for CODIN compatibility workflows.
+
+The primary product UI is now the React studio served by FastAPI.
+"""
+
 import streamlit as st
 import requests
 import pandas as pd
 import json
-import re
 from urllib.parse import urlparse
 
 from ui_shell import (
@@ -19,7 +24,7 @@ from ui_shell import (
     sync_workspace_query_params,
 )
 
-st.set_page_config(page_title="Home - AutoML Studio", page_icon="🏠", layout="wide")
+st.set_page_config(page_title="Legacy Home - CODIN", page_icon="🏠", layout="wide")
 
 load_css()
 ensure_session_state()
@@ -75,6 +80,7 @@ render_page_shell(
     accent="soft",
 )
 render_workspace_banner()
+st.info(f"Primary React studio: {API_URL}/overview")
 if st.session_state.get("_workspace_restored") and st.session_state.get("dataset_id"):
     st.markdown(
         """

@@ -8,7 +8,7 @@ try:
     import lightgbm as lgb
 except Exception:
     lgb = None
-from infra.database import get_db, db_session, MetaLearningRecord
+from infra.database import db_session, MetaLearningRecord
 
 # ── Meta-Feature Extraction ───────────────────────────────────────────────────
 
@@ -69,6 +69,7 @@ class MetaLearner:
         self.is_trained = False
         self.min_records = 10
         self.val_error = 1.0  # High error initially
+        self.feature_columns: List[str] = []
 
     def prepare_data(self, records):
         data = []
@@ -82,9 +83,13 @@ class MetaLearner:
 
             for entry in leaderboard:
                 try:
+                    if entry.get("phase") not in {None, "cross_validation"}:
+                        continue
                     row = mf.copy()
                     row["model_type"] = entry.get("model")
                     row["score"] = entry.get("score", 0)
+                    row["task_type"] = entry.get("task_type") or r.get("task_type")
+                    row["metric_name"] = entry.get("metric_name") or r.get("metric_name")
                     data.append(row)
                 except Exception:
                     continue
@@ -93,14 +98,42 @@ class MetaLearner:
             return pd.DataFrame(), None
 
         df = pd.DataFrame(data)
+        X = self._encode_features(df.drop(columns=["score"], errors="ignore"), fit=True)
+        return X, df.get("score")
 
-        # Encode model_type safely
-        try:
-            df["model_type"] = df["model_type"].astype("category")
-        except Exception:
-            pass
+    def _encode_features(
+        self,
+        frame: pd.DataFrame,
+        fit: bool = True,
+        expected_columns: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
+        if frame.empty:
+            return frame
 
-        return df.drop(columns=["score"], errors="ignore"), df.get("score")
+        encoded = frame.copy()
+        for col in encoded.columns:
+            if pd.api.types.is_bool_dtype(encoded[col]):
+                encoded[col] = encoded[col].astype(int)
+
+        categorical_cols = encoded.select_dtypes(include=["object", "string", "category"]).columns
+        if len(categorical_cols) > 0:
+            encoded = pd.get_dummies(
+                encoded,
+                columns=list(categorical_cols),
+                dummy_na=True,
+                dtype=int,
+            )
+
+        encoded = encoded.fillna(0)
+
+        if fit:
+            self.feature_columns = list(encoded.columns)
+            return encoded
+
+        columns = expected_columns if expected_columns is not None else self.feature_columns
+        if columns:
+            encoded = encoded.reindex(columns=columns, fill_value=0)
+        return encoded
 
     def train(self):
         with db_session() as db:
@@ -110,6 +143,8 @@ class MetaLearner:
                 {
                     "meta_features_json": r.meta_features_json,
                     "leaderboard_json": r.leaderboard_json,
+                    "task_type": r.task_type,
+                    "metric_name": r.metric_name,
                 }
                 for r in raw_records
             ]
@@ -139,8 +174,11 @@ class MetaLearner:
         for i, m in enumerate(model_pool):
             pred_data[i]["model_type"] = m
 
-        X_pred = pd.DataFrame(pred_data)
-        X_pred["model_type"] = X_pred["model_type"].astype("category")
+        X_pred = self._encode_features(
+            pd.DataFrame(pred_data),
+            fit=False,
+            expected_columns=self.feature_columns,
+        )
 
         preds = self.model.predict(X_pred)
 
@@ -291,23 +329,42 @@ def zero_shot_recommend(profile: dict, model_pool: Optional[List[str]] = None) -
     """Entry point for the recommendation engine."""
     pool = model_pool if model_pool else _default_model_pool(profile)
     if not meta_engine.is_trained:
-        meta_engine.train()
+        try:
+            meta_engine.train()
+        except Exception:
+            meta_engine.is_trained = False
+            return meta_engine.get_heuristics(
+                profile, pool, confidence=0, reason="Meta training unavailable"
+            )
     return meta_engine.predict_rankings(profile, pool)
 
 
 def save_meta_record(profile: dict, results: dict):
     """Persist a meta-learning record."""
     mf = extract_meta_features(profile)
+    task_type = "classification" if results.get("is_classification") else "regression"
+    metric_name = results.get("metric_name", "Score")
+    normalized_leaderboard = []
+    for entry in results.get("leaderboard", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        normalized_leaderboard.append(
+            {
+                "model": entry.get("model"),
+                "score": entry.get("score", 0),
+                "phase": entry.get("phase"),
+                "metric_name": metric_name,
+                "task_type": task_type,
+            }
+        )
     with db_session() as db:
         record = MetaLearningRecord(
             meta_features_json=json.dumps(mf),
             best_model=results.get("best_model", ""),
             best_score=results.get("score", 0),
-            task_type=(
-                "classification" if results.get("is_classification") else "regression"
-            ),
-            metric_name=results.get("metric_name", "Score"),
-            leaderboard_json=json.dumps(results.get("leaderboard", [])),
+            task_type=task_type,
+            metric_name=metric_name,
+            leaderboard_json=json.dumps(normalized_leaderboard),
         )
         db.add(record)
         db.commit()

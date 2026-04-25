@@ -1,12 +1,10 @@
 import pandas as pd
 import numpy as np
-import os
 import joblib
 import json
 import shap
 import optuna
-import time
-from sklearn.metrics import accuracy_score, r2_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import accuracy_score, r2_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error, roc_auc_score
 from sklearn.model_selection import train_test_split, cross_val_score, KFold, StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
@@ -25,13 +23,13 @@ except Exception:
     LGBMRegressor = None
     LGBM_TYPES = tuple()
 
-from infra.database import get_db, db_session, JobModel
+from infra.database import db_session, JobModel
 from core.integrations import MLTracking
 from core.feature_engine import ManagedFeatureEngine
 from core.meta_learning import zero_shot_recommend
 from infra.storage import get_model_path, get_run_dir
 from services.training.preprocessing import make_lite_preprocessor, DataAgent
-from services.training.evaluator import _resolve_scoring, stability_check
+from services.training.evaluator import _resolve_scoring, stability_check, detect_task_type, normalize_training_controls
 
 def _update_history_db(job_id: str, history: list):
     """Write history snapshot to the DB using its own isolated session."""
@@ -107,7 +105,6 @@ def train_automl(
     cv_folds: int = 0
 ):
     full_reasoning = []
-    start_time = time.time()
     health_metadata = health_metadata or {}
     eda_summary = {}
 
@@ -171,7 +168,28 @@ def train_automl(
     }
 
     # Task Detection
-    is_clf = not pd.api.types.is_numeric_dtype(y) or y.nunique() <= 20
+    task_decision = detect_task_type(
+        y,
+        target_name=target,
+        override=health_metadata.get("task_type", ""),
+    )
+    controls = normalize_training_controls(
+        task_type=task_decision["task_type"],
+        goal=goal,
+        mode=mode,
+        eval_metric=eval_metric,
+        handle_imbalance=handle_imbalance,
+    )
+    goal = controls["goal"]
+    mode = controls["mode"]
+    eval_metric = controls["eval_metric"]
+    handle_imbalance = controls["handle_imbalance"]
+    full_reasoning.append(
+        f"TaskDetection: {task_decision['reason']} (source={task_decision['source']})."
+    )
+    for warning in controls["warnings"]:
+        full_reasoning.append(f"TrainingConfig: {warning}")
+    is_clf = task_decision["task_type"] == "classification"
     if is_clf:
         le = LabelEncoder()
         y = le.fit_transform(y.astype(str))
@@ -214,7 +232,13 @@ def train_automl(
             model.fit(X_sweep_proc, y_sweep)
             
             # Fast eval on sweep sample
-            score, _, metric_extras = stability_check(model, X_sweep_proc, y_sweep, is_clf)
+            score, _, metric_extras = stability_check(
+                model,
+                X_sweep_proc,
+                y_sweep,
+                is_clf,
+                scoring_name=_resolve_scoring(eval_metric, is_clf),
+            )
             row = {"name": name, "score": score, "model": model}
             row.update(metric_extras)
             sweep_results.append(row)
@@ -242,7 +266,7 @@ def train_automl(
         # ── 3. Stage 2: Exploitation Deep Dive ──────────────────────────────
         full_reasoning.append(f"🚀 Stage 2: Starting Deep Dive optimization for: {[c['name'] for c in top_candidates]}")
         
-        best_overall_score = -1
+        best_overall_score = float("-inf")
         final_model = None
         
         # Deep Dive Loop
@@ -286,16 +310,31 @@ def train_automl(
                         scoring=_resolve_scoring(eval_metric, is_clf),
                     )
                     return scores.mean()
-                except Exception:
-                    return 0
+                except Exception as exc:
+                    raise optuna.TrialPruned(
+                        f"{name} trial failed: {type(exc).__name__}: {exc}"
+                    ) from exc
 
             n_trials = 15 if mode == "Balanced" else 30
             study = optuna.create_study(direction="maximize")
             study.optimize(objective, n_trials=n_trials, timeout=240)
-            
-            if study.best_value > best_overall_score:
-                best_overall_score = study.best_value
-                final_model = model_pool[name].__class__(**study.best_params)
+
+            completed_trials = [
+                trial
+                for trial in study.trials
+                if trial.state == optuna.trial.TrialState.COMPLETE
+            ]
+            if not completed_trials:
+                full_reasoning.append(
+                    f"Deep Dive: {name} produced no completed trials; keeping sweep configuration."
+                )
+                continue
+
+            best_trial = max(completed_trials, key=lambda trial: float(trial.value))
+
+            if float(best_trial.value) > best_overall_score:
+                best_overall_score = float(best_trial.value)
+                final_model = model_pool[name].__class__(**best_trial.params)
                 if LGBM_TYPES and isinstance(final_model, LGBM_TYPES):
                     try:
                         final_model.set_params(verbose=-1)
@@ -304,7 +343,7 @@ def train_automl(
                 winner_pool_name = name
                 
                 # Telemetry update
-                metric_val = round(study.best_value * 100, 1)
+                metric_val = round(float(best_trial.value) * 100, 1)
                 current_history.append({"time": f"DeepDive:{name}", "metric": metric_val})
                 _update_history_db(job_id, current_history)
 
@@ -333,7 +372,6 @@ def train_automl(
     drift_baseline = X_train_full.describe().to_dict()
     
     # Metrics
-    from sklearn.metrics import r2_score, accuracy_score  # reinforcing scope for worker
     preds = final_pipe.predict(X_test)
     score = accuracy_score(y_test, preds) if is_clf else r2_score(y_test, preds)
     
@@ -384,7 +422,7 @@ def train_automl(
             "score": round(r["score"] * 100, 1),
             "phase": "stage1_sweep",
         }
-        for k in ("precision", "recall", "f1", "mse", "mae"):
+        for k in ("accuracy", "precision", "recall", "f1", "roc_auc", "r2", "mse", "rmse", "mae"):
             if k in r:
                 row[k] = r[k]
         leaderboard_rows.append(row)
@@ -403,9 +441,37 @@ def train_automl(
             float(f1_score(y_test, preds, average="weighted", zero_division=0)) * 100,
             1,
         )
+        try:
+            if hasattr(final_pipe, "predict_proba"):
+                probs = final_pipe.predict_proba(X_test)
+                if probs.shape[1] == 2:
+                    leaderboard_out[0]["roc_auc"] = round(
+                        float(roc_auc_score(y_test, probs[:, 1])) * 100,
+                        1,
+                    )
+                else:
+                    leaderboard_out[0]["roc_auc"] = round(
+                        float(
+                            roc_auc_score(
+                                y_test,
+                                probs,
+                                multi_class="ovr",
+                                average="weighted",
+                            )
+                        )
+                        * 100,
+                        1,
+                    )
+        except Exception:
+            leaderboard_out[0]["roc_auc"] = None
     else:
         leaderboard_out[0]["mse"] = round(float(mean_squared_error(y_test, preds)), 6)
         leaderboard_out[0]["mae"] = round(float(mean_absolute_error(y_test, preds)), 6)
+        leaderboard_out[0]["rmse"] = round(
+            float(np.sqrt(mean_squared_error(y_test, preds))),
+            6,
+        )
+        leaderboard_out[0]["r2"] = round(float(r2_score(y_test, preds)), 6)
 
     return {
         "best_model": winner_pool_name,
@@ -420,7 +486,7 @@ def train_automl(
         "eda_summary": eda_summary,
         "model_metadata": {
             "task_type": "classification" if is_clf else "regression",
-            "eval_metric_requested": eval_metric or ("Accuracy" if is_clf else "R²"),
+            "eval_metric_requested": eval_metric or ("F1-score" if is_clf else "RMSE"),
             "cv_folds_used": max(2, int(cv_folds)) if cv_folds else 3,
             "preprocessor": "lite_column_transformer_target_encoder",
             "feature_count": int(len(num_cols) + len(cat_cols)),

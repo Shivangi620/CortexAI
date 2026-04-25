@@ -1,3 +1,9 @@
+"""
+Legacy Streamlit Smart AI Hub page for CODIN compatibility workflows.
+
+The primary product UI is now the React studio served by FastAPI.
+"""
+
 import numpy as np
 import pandas as pd
 import requests
@@ -7,7 +13,6 @@ from ui_shell import (
     API_URL,
     ensure_session_state,
     load_css,
-    render_focus_strip,
     render_page_shell,
     render_safe_dataframe,
     render_section_intro,
@@ -15,7 +20,7 @@ from ui_shell import (
     sync_workspace_query_params,
 )
 
-st.set_page_config(page_title="Smart AI Hub - AutoML Studio", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Legacy Smart AI Hub - CODIN", page_icon="🤖", layout="wide")
 
 load_css()
 ensure_session_state()
@@ -54,6 +59,7 @@ render_page_shell(
     accent="results",
 )
 render_workspace_banner()
+st.info(f"Primary React studio: {API_URL}/tools")
 render_section_intro(
     "Smart Flow",
     "Review the workspace, then build, simulate, and brief the model assistant.",

@@ -7,7 +7,7 @@ import pandas as pd
 import os
 import json
 import numpy as np
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from services.data_sanitizer import sanitize_dataframe
 
 try:
@@ -205,7 +205,7 @@ def get_feature_lineage(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
 
 def get_calibration_report(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
     import joblib
-    from infra.database import get_db, db_session, JobModel, DatasetModel
+    from infra.database import db_session, JobModel, DatasetModel
     from infra.storage import resolve_model_path
     from core.file_loader import load_dataframe
 
@@ -267,7 +267,7 @@ def get_calibration_report(job_id: str, results: Dict[str, Any]) -> Dict[str, An
 
 def get_threshold_tuning(job_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
     import joblib
-    from infra.database import get_db, db_session, JobModel, DatasetModel
+    from infra.database import db_session, JobModel, DatasetModel
     from infra.storage import resolve_model_path
     from core.file_loader import load_dataframe
 
@@ -337,7 +337,7 @@ def generate_counterfactual(
     target_prediction: Optional[float] = None,
 ) -> Dict[str, Any]:
     import joblib
-    from infra.database import DatasetModel, JobModel, get_db, db_session
+    from infra.database import DatasetModel, JobModel, db_session
     from infra.storage import resolve_model_path
     from core.file_loader import load_dataframe
 

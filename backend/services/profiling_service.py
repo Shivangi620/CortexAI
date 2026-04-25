@@ -6,6 +6,8 @@ from __future__ import annotations
 import pandas as pd
 from typing import Optional, Dict, Any, List
 
+from services.training.evaluator import detect_task_type
+
 
 def detect_problem_type(
     df: pd.DataFrame,
@@ -24,7 +26,10 @@ def detect_problem_type(
 
     # ── 2. Detect task type ────────────────────────────────────────────────────
     if suggested and suggested in df.columns:
-        task_type, confidence, task_reason = _detect_task(df[suggested])
+        task_decision = detect_task_type(df[suggested], target_name=suggested)
+        task_type = task_decision["task_type"]
+        confidence = _confidence_from_task_decision(task_decision, df[suggested])
+        task_reason = task_decision["reason"]
     else:
         task_type, confidence, task_reason = "classification", 50, "Fallback default"
 
@@ -96,24 +101,24 @@ def _suggest_target(df: pd.DataFrame) -> str:
 
 def _detect_task(series: pd.Series):
     try:
-        if not pd.api.types.is_numeric_dtype(series):
-            return "classification", 95, "Non-numeric column → classification"
-
-        unique_count = series.nunique(dropna=True)
-        unique_ratio = unique_count / max(len(series), 1)
-
-        if unique_count <= 2:
-            return "classification", 99, f"Binary column ({unique_count} unique values)"
-        if unique_count <= 10 and unique_ratio < 0.05:
-            return "classification", 92, f"Low cardinality ({unique_count} classes)"
-        if unique_count <= 20 and unique_ratio < 0.1:
-            return "classification", 80, f"Likely multi-class ({unique_count} unique values)"
-        if pd.api.types.is_float_dtype(series):
-            return "regression", 90, "Continuous float column → regression"
-
-        return "regression", 70, f"High cardinality int column ({unique_count} unique)"
+        decision = detect_task_type(series)
+        return (
+            decision["task_type"],
+            _confidence_from_task_decision(decision, series),
+            decision["reason"],
+        )
     except Exception:
         return "classification", 50, "Fallback due to error"
+
+
+def _confidence_from_task_decision(decision: Dict[str, Any], series: pd.Series) -> int:
+    source = str(decision.get("source") or "")
+    if source in {"semantic_dtype", "continuous_target", "binary_numeric_target"}:
+        return 95
+    if source in {"target_semantics", "cardinality", "numeric_default"}:
+        unique_count = int(pd.Series(series).nunique(dropna=True))
+        return 88 if unique_count > 2 else 95
+    return 60
 
 
 def _rank_target_candidates(df: pd.DataFrame) -> List[Dict[str, Any]]:

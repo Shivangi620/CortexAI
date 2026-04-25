@@ -7,8 +7,6 @@ import {
   Panel,
   StatCard,
   Spinner,
-  LineageTree,
-  NeuralPulse,
 } from "../components/ui.jsx";
 import { formatDate, formatNumber } from "../lib/format.js";
 
@@ -39,16 +37,11 @@ export function MonitoringPage({
   const historyRows = driftHistory?.history || [];
   const timelineRows = driftTimeline?.timeline || [];
   const alertSummary = driftResult?.alert_summary || driftSchedule?.last_alert_summary || null;
+  const retrainPlan = driftResult?.retrain_recommendation || null;
   const timelinePoints = timelineRows.slice(0, 16).map((item, index) => ({
     label: item.feature || item.uploaded_name || `Check ${index + 1}`,
     value: Number(item.psi) || 0,
   }));
-  const baselineMessage =
-    driftResult?.alert_message ||
-    alertSummary?.recommended_action ||
-    (predictResult?.confidence_pct
-      ? `Latest prediction confidence is ${predictResult.confidence_pct}%. Run drift checks when production batches change materially.`
-      : "Run a drift check to compare the latest production slice against the saved baseline.");
 
   return (
     <>
@@ -59,27 +52,46 @@ export function MonitoringPage({
         stats={[
           { label: "Drift checks", value: historyRows.length, detail: "recorded comparisons" },
           { label: "Feature events", value: timelineRows.length, detail: "timeline points" },
-          { label: "Schedule", value: driftSchedule?.enabled ? "Enabled" : "Disabled", detail: `${driftSchedule?.frequency_days || "—"} day cadence` },
+          {
+            label: "Schedule",
+            value: driftSchedule?.enabled ? "Enabled" : "Disabled",
+            detail: `${driftSchedule?.frequency_days || "—"} day cadence`,
+          },
           { label: "Last alert", value: driftSchedule?.last_alert_status || "—", detail: "latest alert state" },
         ]}
       />
 
       <div className="grid grid--stats">
-        <StatCard label="Due now" value={driftSchedule?.due_now ? "Yes" : "No"} detail={driftSchedule?.next_due_at || "no next due date"} tone="warning" />
-        <StatCard label="Warning PSI" value={formatNumber(driftSchedule?.warning_threshold)} detail="warning boundary" />
-        <StatCard label="Critical PSI" value={formatNumber(driftSchedule?.critical_threshold)} detail="critical boundary" tone="success" />
-        <StatCard label="Overall status" value={driftResult?.overall_status || "—"} detail={driftResult?.alert_level || "no fresh report"} />
+        <StatCard
+          label="Due now"
+          value={driftSchedule?.due_now ? "Yes" : "No"}
+          detail={driftSchedule?.next_due_at || "no next due date"}
+          tone="warning"
+        />
+        <StatCard
+          label="Warning PSI"
+          value={formatNumber(driftSchedule?.warning_threshold)}
+          detail="warning boundary"
+        />
+        <StatCard
+          label="Critical PSI"
+          value={formatNumber(driftSchedule?.critical_threshold)}
+          detail="critical boundary"
+          tone="success"
+        />
+        <StatCard
+          label="Overall status"
+          value={driftResult?.overall_status || "—"}
+          detail={driftResult?.alert_level || "no fresh report"}
+        />
       </div>
 
       <div className="grid grid--two">
-        <Panel title="Neural Pulse Telemetry" subtitle="Live visualization of the model's stochastic vital signs. Ripple intensity maps to confidence." tone="accent">
-          <NeuralPulse confidence={predictResult?.confidence_pct || 88} activity={loading ? 1 : 0.4} />
-          <div className="message message--accent tiny" style={{ marginTop: "1rem" }}>
-            <strong>Ops Summary:</strong> {baselineMessage}
-          </div>
-        </Panel>
-
-        <Panel title="Fresh drift check" subtitle="Upload the latest production slice and compare it to the run baseline.">
+     
+        <Panel
+          title="Fresh drift check"
+          subtitle="Upload the latest production slice and compare it to the run baseline."
+        >
           <form className="stack" onSubmit={driftDetect}>
             <label className="field">
               <span>Production sample</span>
@@ -92,7 +104,46 @@ export function MonitoringPage({
           <Message text={detectMessage} />
           {alertSummary && (
             <div className="message message--warning tiny" style={{ marginTop: "1rem" }}>
-              <strong>{alertSummary.headline || "Latest alert"}:</strong> {alertSummary.recommended_action || alertSummary.message || "Review the latest drift report."}
+              <strong>{alertSummary.headline || "Latest alert"}:</strong>{" "}
+              {alertSummary.recommended_action || alertSummary.message || "Review the latest drift report."}
+            </div>
+          )}
+          {retrainPlan && (
+            <div className="monitoring-retrain-plan" style={{ marginTop: "1rem" }}>
+              <div className="monitoring-retrain-plan__header">
+                <span className="tiny-eyebrow">Recommended Retrain Lane</span>
+                <strong>
+                  {retrainPlan.recommended_goal || "Balanced"} / {retrainPlan.recommended_mode || "Balanced"}
+                </strong>
+              </div>
+              <p>{retrainPlan.message || "A fresh retrain recommendation is available for this drift report."}</p>
+              <div className="monitoring-retrain-plan__grid">
+                <div className="monitoring-retrain-plan__item">
+                  <span>Current model</span>
+                  <strong>{retrainPlan.current_model || "—"}</strong>
+                </div>
+                <div className="monitoring-retrain-plan__item">
+                  <span>Historical winner</span>
+                  <strong>{retrainPlan.historical_winner || "—"}</strong>
+                </div>
+                <div className="monitoring-retrain-plan__item">
+                  <span>Meta confidence</span>
+                  <strong>{formatNumber(retrainPlan.memory_confidence)}%</strong>
+                </div>
+                <div className="monitoring-retrain-plan__item">
+                  <span>Historical runs</span>
+                  <strong>{formatNumber(retrainPlan.historical_runs)}</strong>
+                </div>
+              </div>
+              {Array.isArray(retrainPlan.candidate_models) && retrainPlan.candidate_models.length > 0 && (
+                <div className="monitoring-retrain-plan__chips">
+                  {retrainPlan.candidate_models.map((model) => (
+                    <span key={model} className="training-chip training-chip--soft">
+                      {model}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {driftResult?.feature_drift?.length > 0 && (
@@ -114,27 +165,50 @@ export function MonitoringPage({
         <Panel title="Alert policy" subtitle="Tune monitoring cadence and thresholds without leaving the page.">
           <form className="stack" onSubmit={driftScheduleSave}>
             <label className="checkbox">
-              <input type="checkbox" checked={forms.driftEnabled} onChange={(event) => patchForm("driftEnabled", event.target.checked)} />
+              <input
+                type="checkbox"
+                checked={forms.driftEnabled}
+                onChange={(event) => patchForm("driftEnabled", event.target.checked)}
+              />
               <span>Enable scheduled monitoring</span>
             </label>
             <div className="split">
               <label className="field">
                 <span>Frequency (days)</span>
-                <input type="number" min="1" value={forms.driftFrequencyDays} onChange={(event) => patchForm("driftFrequencyDays", event.target.value)} />
+                <input
+                  type="number"
+                  min="1"
+                  value={forms.driftFrequencyDays}
+                  onChange={(event) => patchForm("driftFrequencyDays", event.target.value)}
+                />
               </label>
               <label className="field">
                 <span>Feature filter</span>
-                <input value={forms.driftFeature} onChange={(event) => patchForm("driftFeature", event.target.value)} placeholder="optional feature name" />
+                <input
+                  value={forms.driftFeature}
+                  onChange={(event) => patchForm("driftFeature", event.target.value)}
+                  placeholder="optional feature name"
+                />
               </label>
             </div>
             <div className="split">
               <label className="field">
                 <span>Warning threshold</span>
-                <input type="number" step="0.01" value={forms.driftWarningThreshold} onChange={(event) => patchForm("driftWarningThreshold", event.target.value)} />
+                <input
+                  type="number"
+                  step="0.01"
+                  value={forms.driftWarningThreshold}
+                  onChange={(event) => patchForm("driftWarningThreshold", event.target.value)}
+                />
               </label>
               <label className="field">
                 <span>Critical threshold</span>
-                <input type="number" step="0.01" value={forms.driftCriticalThreshold} onChange={(event) => patchForm("driftCriticalThreshold", event.target.value)} />
+                <input
+                  type="number"
+                  step="0.01"
+                  value={forms.driftCriticalThreshold}
+                  onChange={(event) => patchForm("driftCriticalThreshold", event.target.value)}
+                />
               </label>
             </div>
             <button className="button button--secondary" type="submit">
@@ -146,8 +220,16 @@ export function MonitoringPage({
       </div>
 
       <div className="grid grid--two">
-        <Panel title="Feature drift curve" subtitle="A lightweight chart shows PSI movement over the recorded feature timeline.">
-          <MiniAreaChart points={timelinePoints} valueKey="value" labelKey="label" empty="Run at least one drift check to generate a curve." />
+        <Panel
+          title="Feature drift curve"
+          subtitle="A lightweight chart shows PSI movement over the recorded feature timeline."
+        >
+          <MiniAreaChart
+            points={timelinePoints}
+            valueKey="value"
+            labelKey="label"
+            empty="Run at least one drift check to generate a curve."
+          />
           {driftResult?.critical_features?.length > 0 && (
             <div className="message message--danger tiny" style={{ marginTop: "1rem" }}>
               Critical features: {driftResult.critical_features.join(", ")}
@@ -155,17 +237,60 @@ export function MonitoringPage({
           )}
         </Panel>
 
-        <Panel title="Retraining response" subtitle="If the drift check becomes actionable, launch retraining directly from this room.">
+        <Panel
+          title="Retraining response"
+          subtitle="If the drift check becomes actionable, launch retraining directly from this room."
+        >
           <form className="stack" onSubmit={driftRetrain}>
             <label className="field">
               <span>Retraining dataset</span>
               <input ref={retrainUploadRef} type="file" />
             </label>
+            {retrainPlan && (
+              <div className="message message--accent tiny">
+                This launch will use {retrainPlan.recommended_goal || "Balanced"} /{" "}
+                {retrainPlan.recommended_mode || "Balanced"} from the drift recommendation.
+              </div>
+            )}
             <button className="button button--primary" type="submit">
-              Retrain From Drift Sample
+              {retrainPlan
+                ? `Retrain With ${retrainPlan.recommended_goal || "Balanced"} / ${retrainPlan.recommended_mode || "Balanced"}`
+                : "Retrain From Drift Sample"}
             </button>
           </form>
           <Message text={retrainMessage} />
+          {retrainPlan && (
+            <div className="monitoring-retrain-plan monitoring-retrain-plan--compact" style={{ marginTop: "1rem" }}>
+              <div className="monitoring-retrain-plan__header">
+                <span className="tiny-eyebrow">Challenger Set</span>
+                <strong>
+                  {retrainPlan.recommended_goal || "Balanced"} / {retrainPlan.recommended_mode || "Balanced"}
+                </strong>
+              </div>
+              <p>{retrainPlan.message || "Use the suggested challenger set for the next retrain."}</p>
+              {retrainPlan.memory_applied &&
+                Array.isArray(retrainPlan.memory_reordered_models) &&
+                retrainPlan.memory_reordered_models.length > 0 && (
+                  <div className="message message--accent tiny">
+                    Historical winner memory nudged the shortlist order for{" "}
+                    {retrainPlan.memory_reordered_models.slice(0, 3).join(", ")}.
+                  </div>
+                )}
+              {Array.isArray(retrainPlan.candidate_models) && retrainPlan.candidate_models.length > 0 && (
+                <DataTable
+                  compact
+                  columns={[
+                    { key: "name", label: "Candidate" },
+                    { key: "role", label: "Role" },
+                  ]}
+                  rows={retrainPlan.candidate_models.map((name, index) => ({
+                    name,
+                    role: index === 0 ? "Lead challenger" : "Compare",
+                  }))}
+                />
+              )}
+            </div>
+          )}
           {historyRows[0] && (
             <div className="message message--accent tiny" style={{ marginTop: "1rem" }}>
               Latest recorded check: {historyRows[0].status || "unknown"} on {formatDate(historyRows[0].created_at)}
@@ -175,7 +300,10 @@ export function MonitoringPage({
       </div>
 
       <div className="grid grid--two">
-        <Panel title="Recent drift checks" subtitle="Operational history now has a proper table instead of only raw JSON.">
+        <Panel
+          title="Recent drift checks"
+          subtitle="Operational history now has a proper table instead of only raw JSON."
+        >
           <DataTable
             columns={[
               { key: "uploaded_name", label: "Dataset" },
@@ -188,7 +316,10 @@ export function MonitoringPage({
           />
         </Panel>
 
-        <Panel title="Feature event table" subtitle="The feature-level timeline remains inspectable when you need the detail behind the chart.">
+        <Panel
+          title="Feature event table"
+          subtitle="The feature-level timeline remains inspectable when you need the detail behind the chart."
+        >
           <DataTable
             columns={[
               { key: "feature", label: "Feature" },
@@ -205,97 +336,16 @@ export function MonitoringPage({
       </div>
 
       <div className="grid grid--two">
-        <Panel title="Goal Seeker (Counterfactuals)" subtitle="Set a target prediction and find the minimal changes needed to reach it.">
-          <div className="stack">
-            <label className="field">
-              <span>Target Prediction</span>
-              <input
-                type="number"
-                step="0.1"
-                value={forms.goalSeekTarget || ""}
-                onChange={(e) => patchForm("goalSeekTarget", e.target.value)}
-                placeholder="e.g. 0.95"
-              />
-            </label>
-            <button className="button button--accent" onClick={getGoalSeeker}>
-              Find Optimal Path
-            </button>
-            {goalSeeker?.current_prediction !== undefined && (
-              <div className="message message--accent tiny">
-                Current prediction: {formatNumber(goalSeeker.current_prediction)} • Target: {formatNumber(goalSeeker.target_prediction)}
-              </div>
-            )}
-            {goalSeeker?.suggestions?.length > 0 && (
-              <div className="stack box" style={{ marginTop: "1rem" }}>
-                <strong>Suggestions:</strong>
-                {goalSeeker.suggestions.map((s, i) => (
-                  <div key={i} className="message message--success tiny">
-                    {(s.change || `Change ${s.feature}`)} → <strong>{s.feature}</strong> → New Pred: {s.new_prediction}
-                  </div>
-                ))}
-              </div>
-            )}
-            {goalSeeker?.error && <div className="message message--danger">{goalSeeker.error}</div>}
-          </div>
-        </Panel>
-
-        <Panel
-          title="Neural Simulation Sandbox"
-          subtitle="Tweak feature values in real-time to see how the model reacts. Impactful changes will trigger a sensitivity glow."
-        >
-          <div className="stack">
-            <div className="grid grid--two">
-              {predictResult?.feature_names?.slice(0, 10).map((name) => {
-                const sensitivity = predictResult?.sensitivity?.[name] || 0;
-                const glowIntensity = Math.min(sensitivity * 5, 1);
-                return (
-                  <div
-                    key={name}
-                    className="field sensitivity-glow"
-                    style={{ "--glow-intensity": glowIntensity, "--glow-color": sensitivity > 0.1 ? "var(--accent)" : "var(--line)" }}
-                  >
-                    <span>{name} {sensitivity > 0 ? `(Impact: ${Math.round(sensitivity * 100)}%)` : ""}</span>
-                    <input
-                      type="text"
-                      placeholder="Enter value..."
-                      value={forms.predictPayload?.[name] || ""}
-                      onChange={(e) => {
-                        const newPayload = { ...forms.predictPayload, [name]: e.target.value };
-                        patchForm("predictPayload", newPayload);
-                        // Pass null or a dummy object if handlePredict expects an event
-                        handlePredict(null, newPayload);
-                      }}
-                      className="neural-pulse"
-                    />
-                  </div>
-                );
-              })}
-            </div>
-            {loading && <Spinner label="Simulating neural response..." />}
-            {predictResult && (
-              <div className="message message--accent" style={{ marginTop: "1rem" }}>
-                <strong>Simulated Prediction: {predictResult.prediction}</strong>
-                {predictResult.confidence_pct && <p className="tiny">Confidence: {predictResult.confidence_pct}%</p>}
-              </div>
-            )}
-          </div>
-        </Panel>
-      </div>
-
-      <div className="grid grid--two">
-        <Panel
-          title="Single Prediction"
-          subtitle="Send a feature object through the selected trained model."
-        >
+        <Panel title="Single Prediction" subtitle="Send a feature object through the selected trained model.">
           <div className="stack">
             <div className="split">
               <span className="tiny-eyebrow">Input JSON</span>
-              <button 
-                className="button button--ghost tiny" 
+              <button
+                className="button button--ghost tiny"
                 onClick={() => {
                   const target = datasetProfile?.suggested_target;
                   const template = {};
-                  datasetProfile?.columns?.forEach(c => {
+                  datasetProfile?.columns?.forEach((c) => {
                     if (c !== target) template[c] = 0;
                   });
                   patchForm("predictPayload", template);
@@ -307,7 +357,11 @@ export function MonitoringPage({
             <textarea
               className="code-editor"
               rows={6}
-              value={typeof forms.predictPayload === "string" ? forms.predictPayload : JSON.stringify(forms.predictPayload, null, 2)}
+              value={
+                typeof forms.predictPayload === "string"
+                  ? forms.predictPayload
+                  : JSON.stringify(forms.predictPayload, null, 2)
+              }
               onChange={(e) => patchForm("predictPayload", e.target.value)}
             />
             <button className="button" onClick={handlePredict}>
@@ -318,7 +372,9 @@ export function MonitoringPage({
                 <strong>Prediction Result:</strong> {predictResult.prediction}
                 {predictResult.probabilities && (
                   <p className="tiny">
-                    {Object.entries(predictResult.probabilities).map(([label, value]) => `${label}: ${formatNumber(value)}%`).join(" • ")}
+                    {Object.entries(predictResult.probabilities)
+                      .map(([label, value]) => `${label}: ${formatNumber(value)}%`)
+                      .join(" • ")}
                   </p>
                 )}
               </div>
@@ -333,13 +389,12 @@ export function MonitoringPage({
           <div className="stack">
             <label className="field">
               <span>Feature to Sweep</span>
-              <select 
-                value={forms.sweepFeature || ""} 
-                onChange={(e) => patchForm("sweepFeature", e.target.value)}
-              >
+              <select value={forms.sweepFeature || ""} onChange={(e) => patchForm("sweepFeature", e.target.value)}>
                 <option value="">Select a feature...</option>
-                {datasetProfile?.columns?.map(c => (
-                  <option key={c} value={c}>{c}</option>
+                {datasetProfile?.columns?.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
                 ))}
               </select>
             </label>
@@ -347,17 +402,21 @@ export function MonitoringPage({
             <textarea
               className="code-editor"
               rows={4}
-              value={typeof forms.baseFeatures === "string" ? forms.baseFeatures : JSON.stringify(forms.baseFeatures, null, 2)}
+              value={
+                typeof forms.baseFeatures === "string"
+                  ? forms.baseFeatures
+                  : JSON.stringify(forms.baseFeatures, null, 2)
+              }
               onChange={(e) => patchForm("baseFeatures", e.target.value)}
             />
-             <label className="field">
-                <span>Sweep values</span>
-                <input
-                  value={forms.futureValues}
-                  onChange={(event) => patchForm("futureValues", event.target.value)}
-                  placeholder="e.g. 1,2,3,4 or 0.1,0.5,0.9"
-                />
-              </label>
+            <label className="field">
+              <span>Sweep values</span>
+              <input
+                value={forms.futureValues}
+                onChange={(event) => patchForm("futureValues", event.target.value)}
+                placeholder="e.g. 1,2,3,4 or 0.1,0.5,0.9"
+              />
+            </label>
             <button className="button" onClick={handleFutureSweep}>
               Run Sweep
             </button>
@@ -380,7 +439,10 @@ export function MonitoringPage({
                     {
                       key: "confidence",
                       label: "Confidence",
-                      render: (row) => row.confidence === null || row.confidence === undefined ? "—" : `${formatNumber(row.confidence)}%`,
+                      render: (row) =>
+                        row.confidence === null || row.confidence === undefined
+                          ? "—"
+                          : `${formatNumber(row.confidence)}%`,
                     },
                     { key: "error", label: "Error" },
                   ]}

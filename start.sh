@@ -1,7 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# This script launches Redis, FastAPI, Celery, and Nginx in one HF Space container.
+# Supported deployed/container launcher.
+# The Docker image already builds the React bundle during image build.
+# Optional:
+#   CODIN_BUILD_FRONTEND_ON_START=1 -> rebuild frontend assets at container startup
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -13,6 +16,20 @@ export CELERY_BROKER_URL="${CELERY_BROKER_URL:-$REDIS_URL}"
 export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-$REDIS_URL}"
 export PORT="${PORT:-7860}"
 export MAX_UPLOAD_MB="${MAX_UPLOAD_MB:-500}"
+export CODIN_BUILD_FRONTEND_ON_START="${CODIN_BUILD_FRONTEND_ON_START:-0}"
+
+if [[ "$CODIN_BUILD_FRONTEND_ON_START" == "1" ]] && command -v npm >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/package.json" ]]; then
+    if [[ ! -d "$SCRIPT_DIR/node_modules" ]]; then
+        echo "Installing frontend dependencies..."
+        if [[ -f "$SCRIPT_DIR/package-lock.json" ]]; then
+            (cd "$SCRIPT_DIR" && npm ci)
+        else
+            (cd "$SCRIPT_DIR" && npm install)
+        fi
+    fi
+    echo "Rebuilding React frontend bundle at container startup..."
+    (cd "$SCRIPT_DIR" && npm run build:frontend)
+fi
 
 mkdir -p /tmp/nginx_client_body /tmp/nginx_proxy /tmp/nginx_fastcgi /tmp/nginx_uwsgi /tmp/nginx_scgi
 
@@ -61,5 +78,5 @@ nginx -c /tmp/nginx.generated.conf &
 NGINX_PID=$!
 
 echo "All services launched."
+echo "Studio is expected at http://127.0.0.1:${PORT}/overview"
 wait -n "$NGINX_PID" "$WORKER_PID" "$BACKEND_PID" "$REDIS_PID"
-

@@ -1,7 +1,9 @@
 """
-Standardized error handling with structured logging.
+Legacy frontend error handling helpers.
 
-Provides consistent error categorization, retry guidance, and logging.
+These utilities support older Python/Streamlit-facing workflows in `frontend/`.
+The primary user interface is now the React studio, but these helpers still
+provide structured error categorization for compatibility codepaths.
 """
 
 import logging

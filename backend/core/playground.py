@@ -48,10 +48,11 @@ def quick_train(
     if target not in df.columns:
         return {"error": f"Target '{target}' not found"}
 
-    # ✅ FIX 2: safe selected_features
-    selected_features = selected_features or []
+    # Default to the dataset's non-target columns when no explicit feature list is supplied.
+    selected_features = selected_features or [column for column in df.columns if column != target]
 
-    cols_to_use = [f for f in selected_features if f in df.columns and f != target] + [target]
+    valid_features = [f for f in selected_features if f in df.columns and f != target]
+    cols_to_use = valid_features + [target]
     df = df[cols_to_use].dropna(subset=[target])
 
     if df.empty:
@@ -59,6 +60,9 @@ def quick_train(
 
     y = df[target]
     X = df.drop(columns=[target])
+
+    if X.empty:
+        return {"error": "Quicktrain needs at least one feature column besides the target."}
 
     is_clf = (y.nunique() < 20) or (not pd.api.types.is_numeric_dtype(y))
 
@@ -68,13 +72,26 @@ def quick_train(
         le = LabelEncoder()
         y = pd.Series(le.fit_transform(y.astype(str)), index=y.index)
 
+    X = X.copy()
+    bool_cols = X.select_dtypes(include=["bool"]).columns.tolist()
+    datetime_cols = X.select_dtypes(include=["datetime", "datetimetz"]).columns.tolist()
+
+    for col in bool_cols:
+        X[col] = X[col].astype(int)
+    for col in datetime_cols:
+        X[col] = X[col].astype(str)
+
     num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = X.select_dtypes(include=["object", "category"]).columns.tolist()
 
-    # ✅ FIX 4: avoid SettingWithCopy
-    X = X.copy()
     for col in cat_cols:
         X[col] = X[col].astype(str)
+
+    usable_cols = num_cols + cat_cols
+    if not usable_cols:
+        return {"error": "Quicktrain could not find usable numeric, categorical, boolean, or datetime feature columns."}
+
+    X = X[usable_cols]
 
     if len(X) < 10:
         return {"error": "Not enough rows after filtering (need at least 10)."}
@@ -126,8 +143,13 @@ def quick_train(
 
         model = model_registry[name]
 
+        try:
+            preprocessor = make_preprocessor(num_cols, cat_cols)
+        except ValueError as e:
+            return {"error": str(e)}
+
         pipe = Pipeline([
-            ("preprocessor", make_preprocessor(num_cols, cat_cols)),
+            ("preprocessor", preprocessor),
             ("model", model),
         ])
 

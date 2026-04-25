@@ -5,25 +5,75 @@ from fastapi.responses import FileResponse
 import json
 import os
 
-from infra.database import get_db, db_session, JobModel, DatasetModel
+from infra.database import db_session, JobModel, DatasetModel
+from infra.launch_origin import parse_launch_origin
 from infra.result_contract import normalize_results
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
 
-def _model_card_html(job_id: str, results: dict, profile: dict, insights: dict, story: str) -> str:
+def _artifact_filename(job_id: str, launch_origin: dict | None, kind: str) -> str:
+    launch_origin = launch_origin or {}
+    prefix = "drift_reopen" if launch_origin.get("launch_source") == "drift_recommendation" else "manual"
+    base = job_id[:8]
+    if kind == "pdf":
+        return f"{prefix}_automl_report_{base}.pdf"
+    if kind == "model_card":
+        return f"{prefix}_model_card_{base}.html"
+    return f"{prefix}_{kind}_{base}"
+
+
+def _display_metric(metric_name: str, score_val):
+    try:
+        score_float = float(score_val)
+    except (TypeError, ValueError):
+        return "—"
+
+    metric_lower = (metric_name or "").lower()
+    if "r²" in metric_name or metric_lower in {"r2", "r2 score"}:
+        return f"{score_float:.4f}"
+    if "rmse" in metric_lower or "mse" in metric_lower or "mae" in metric_lower:
+        return f"{score_float:,.4f}"
+    return f"{score_float:.1f}%"
+
+
+def _humanize_phase(value):
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    return text.replace("_", " ").title()
+
+
+def _model_card_html(
+    job_id: str,
+    results: dict,
+    profile: dict,
+    insights: dict,
+    story: str,
+    launch_origin: dict | None = None,
+) -> str:
+    launch_origin = launch_origin or {}
+    launch_label = launch_origin.get("launch_label", "Manual")
+    launch_context = launch_origin.get("launch_context", {}) or {}
+    launch_source_note = (
+        f"Parent run: {(launch_context.get('parent_job_id') or launch_context.get('source_job_id') or '—')}"
+        if launch_origin.get("launch_source") == "drift_recommendation"
+        else "Directly launched from the studio."
+    )
     rows = profile.get("rows", "—")
     cols = profile.get("cols", "—")
     metric_name = results.get("metric_name", "Score")
-    score = results.get("score", "—")
+    score = _display_metric(metric_name, results.get("score", "—"))
     tested_models = results.get("tested_models", [])
     
     top_rows = []
     for row in tested_models[:8]:
+        row_metric = row.get("score_label") or metric_name
+        displayed_score = _display_metric(row_metric, row.get("score"))
         top_rows.append(
-            f"<tr><td>{row.get('model','—')}</td><td>{row.get('status','—')}</td><td class='neon-text'>{row.get('holdout_score','—')}</td></tr>"
+            f"<tr><td>{row.get('model','—')}</td><td>{_humanize_phase(row.get('phase') or row.get('status','—'))}</td><td>{row_metric}</td><td class='neon-text'>{displayed_score}</td></tr>"
         )
-    tested_html = "".join(top_rows) or "<tr><td colspan='3'>No tested model details available.</td></tr>"
+    tested_html = "".join(top_rows) or "<tr><td colspan='4'>No tested model details available.</td></tr>"
     
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -96,18 +146,37 @@ def _model_card_html(job_id: str, results: dict, profile: dict, insights: dict, 
     <div class="header">
       <h1>Mission Dossier</h1>
       <p>ID: {job_id} | Created: {results.get("timestamp", "—")}</p>
+      <p>Origin: {launch_label}</p>
     </div>
 
     <div class="grid">
       <div class="card">
         <h2>Primary Model</h2>
         <div class="stat">{results.get("best_model","—")}</div>
-        <div class="stat-label">Winner of Neural Architecture Search</div>
+        <div class="stat-label">Winner of the current AutoML evaluation pipeline</div>
       </div>
       <div class="card">
         <h2>Optimal {metric_name}</h2>
         <div class="stat neon-text">{score}</div>
         <div class="stat-label">Calculated via K-Fold Cross-Validation</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Operational Origin</h2>
+      <div class="grid">
+        <div class="card">
+          <h2>Launch Type</h2>
+          <div class="stat">{launch_label}</div>
+          <div class="stat-label">{launch_source_note}</div>
+        </div>
+        <div class="card">
+          <h2>Execution Context</h2>
+          <div><span class="tag">Goal: {launch_context.get("recommended_goal", results.get("goal", "—"))}</span> <span class="tag">Mode: {launch_context.get("recommended_mode", results.get("mode", "—"))}</span></div>
+          <p style="font-size: 0.9rem; color: var(--text-dim); margin-top: 12px;">
+            {launch_context.get("message", "Run origin is recorded so exported artifacts preserve operational context.")}
+          </p>
+        </div>
       </div>
     </div>
 
@@ -143,7 +212,7 @@ def _model_card_html(job_id: str, results: dict, profile: dict, insights: dict, 
       <h2>Leaderboard Audit Trail</h2>
       <table>
         <thead>
-          <tr><th>Model Architecture</th><th>Run Status</th><th>Holdout Score</th></tr>
+          <tr><th>Model Architecture</th><th>Phase</th><th>Metric</th><th>Score</th></tr>
         </thead>
         <tbody>
           {tested_html}
@@ -180,6 +249,11 @@ def generate_pdf_report(job_id: str):
             raw_results = {}
 
         results = normalize_results(raw_results)
+        try:
+            params = json.loads(job.params_json) if job.params_json else {}
+        except Exception:
+            params = {}
+        launch_origin = parse_launch_origin(params)
 
         try:
             insights = json.loads(job.insights_json) if job.insights_json else {}
@@ -209,7 +283,7 @@ def generate_pdf_report(job_id: str):
 
     try:
         pdf_path = generate_pdf(
-            job_id, results, profile, insights, story, recommendations
+            job_id, results, profile, insights, story, recommendations, launch_origin
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
@@ -219,7 +293,7 @@ def generate_pdf_report(job_id: str):
 
     return FileResponse(
         path=pdf_path,
-        filename=f"automl_report_{job_id[:8]}.pdf",
+        filename=_artifact_filename(job_id, launch_origin, "pdf"),
         media_type="application/pdf",
     )
 
@@ -238,6 +312,11 @@ def generate_model_card(job_id: str):
         except Exception:
             raw_results = {}
         results = normalize_results(raw_results)
+        try:
+            params = json.loads(job.params_json) if job.params_json else {}
+        except Exception:
+            params = {}
+        launch_origin = parse_launch_origin(params)
 
         try:
             insights = json.loads(job.insights_json) if job.insights_json else {}
@@ -251,10 +330,14 @@ def generate_model_card(job_id: str):
         except Exception:
             profile = {}
 
-    html = _model_card_html(job_id, results, profile, insights, story)
+    html = _model_card_html(job_id, results, profile, insights, story, launch_origin)
     out_dir = os.path.join("tmp", "model_cards")
     os.makedirs(out_dir, exist_ok=True)
     html_path = os.path.join(out_dir, f"{job_id}_model_card.html")
     with open(html_path, "w") as f:
         f.write(html)
-    return FileResponse(path=html_path, filename=f"model_card_{job_id[:8]}.html", media_type="text/html")
+    return FileResponse(
+        path=html_path,
+        filename=_artifact_filename(job_id, launch_origin, "model_card"),
+        media_type="text/html",
+    )

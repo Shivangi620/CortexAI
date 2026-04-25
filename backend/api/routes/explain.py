@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional
 import json
 
-from infra.database import get_db, db_session, JobModel
+from infra.database import db_session, JobModel
 from infra.result_contract import normalize_results
 
 router = APIRouter(prefix="/api", tags=["explainability"])

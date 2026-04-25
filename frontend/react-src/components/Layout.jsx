@@ -2,23 +2,7 @@ import React from "react";
 import { ROUTES, navigateTo } from "../config/routes.js";
 import { Badge } from "./ui.jsx";
 
-export function Layout({
-  currentPath,
-  datasets,
-  jobs,
-  selectedDataset,
-  selectedJob,
-  selectedDatasetId,
-  selectedJobId,
-  setSelectedDatasetId,
-  setSelectedJobId,
-  refresh,
-  loading,
-  metaStatus,
-  theme,
-  toggleTheme,
-  children,
-}) {
+export function Layout({ currentPath, datasets, jobs, theme, toggleTheme, children }) {
   const current = ROUTES.find((route) => route.path === currentPath) || ROUTES[0];
   const completedJobs = jobs.filter((job) => job.status === "completed").length;
 
@@ -29,9 +13,11 @@ export function Layout({
 
       <aside className="studio-sidebar">
         <div className="brand-card">
-          <span className="brand-card__label">ML Studio</span>
-          <h1>CODIN Neural Studio</h1>
-          <p>Simple on the surface, deep in capability. Built around the real backend workflows already in this project.</p>
+          <span className="brand-card__label">Inferyx Neural Studio</span>
+          <h1>Inferyx</h1>
+          <p>
+            AutoML orchestration for ingestion, training, simulation, monitoring, and export of machine learning models.
+          </p>
           <div className="brand-card__tags">
             <Badge tone="success">{datasets.length} datasets</Badge>
             <Badge>{jobs.length} jobs</Badge>

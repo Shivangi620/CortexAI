@@ -278,9 +278,11 @@ export function Heatmap({ data = [], xLabels = [], yLabels = [], empty = "No hea
   return (
     <div className="heatmap">
       <div className="heatmap__grid" style={{ gridTemplateColumns: `auto repeat(${xLabels.length}, 1fr)` }}>
-        <div /> 
+        <div />
         {xLabels.map((label) => (
-          <div key={label} className="heatmap__label heatmap__label--x">{label}</div>
+          <div key={label} className="heatmap__label heatmap__label--x">
+            {label}
+          </div>
         ))}
         {yLabels.map((yLabel, yIndex) => (
           <React.Fragment key={yLabel}>
@@ -304,7 +306,13 @@ export function Heatmap({ data = [], xLabels = [], yLabels = [], empty = "No hea
   );
 }
 
-export function TimelineList({ items, titleKey = "title", detailKey = "detail", metaKey = "meta", empty = "No timeline yet." }) {
+export function TimelineList({
+  items,
+  titleKey = "title",
+  detailKey = "detail",
+  metaKey = "meta",
+  empty = "No timeline yet.",
+}) {
   if (!items?.length) return <EmptyState text={empty} />;
   return (
     <div className="timeline">
@@ -360,11 +368,7 @@ export function SegmentedControl({ options, value, onChange, label }) {
 export function Checkbox({ label, checked, onChange, help }) {
   return (
     <label className="checkbox" title={help}>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-      />
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <span>{label}</span>
     </label>
   );
@@ -380,21 +384,21 @@ export function Spinner({ size = "md", label }) {
 }
 
 export function NeuralPulse({ confidence = 85, activity = 0.5 }) {
+  const safeConfidence = Number.isFinite(Number(confidence)) ? Math.max(0, Math.min(99, Number(confidence))) : 0;
+  const safeActivity = Number.isFinite(Number(activity)) ? Math.max(0, Math.min(1, Number(activity))) : 0.5;
+
   return (
     <div className="neural-pulse-container">
       <div className="pulse-ring" style={{ animationDelay: "0s" }} />
       <div className="pulse-ring" style={{ animationDelay: "1s" }} />
       <div className="pulse-ring" style={{ animationDelay: "2s" }} />
-      <div className="pulse-circle" style={{ opacity: activity }} />
+      <div className="pulse-circle" style={{ opacity: safeActivity }} />
       <svg className="absolute-full" viewBox="0 0 200 100" preserveAspectRatio="none">
-        <path
-          className="fluid-wave"
-          d={`M0 50 Q 50 ${50 - confidence/4} 100 50 T 200 50 V 100 H 0 Z`}
-        />
+        <path className="fluid-wave" d={`M0 50 Q 50 ${50 - safeConfidence / 4} 100 50 T 200 50 V 100 H 0 Z`} />
       </svg>
       <div className="absolute-center stack text-center">
         <span className="tiny-eyebrow">Neural Vitality</span>
-        <strong className="massive">{confidence}%</strong>
+        <strong className="massive">{safeConfidence}%</strong>
       </div>
     </div>
   );
@@ -402,13 +406,13 @@ export function NeuralPulse({ confidence = 85, activity = 0.5 }) {
 
 export function LineageTree({ nodes = [] }) {
   if (!nodes.length) return <EmptyState text="No lineage data available." />;
-  
+
   return (
     <div className="lineage-flow">
       {nodes.map((node, i) => (
         <div key={node.id} className="lineage-step">
           <div className="lineage-marker">
-            <div className={`lineage-dot ${node.is_job ? 'lineage-dot--job' : 'lineage-dot--data'}`} />
+            <div className={`lineage-dot ${node.is_job ? "lineage-dot--job" : "lineage-dot--data"}`} />
             {i < nodes.length - 1 && <div className="lineage-line" />}
           </div>
           <div className="lineage-content">

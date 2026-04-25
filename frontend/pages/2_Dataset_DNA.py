@@ -1,3 +1,9 @@
+"""
+Legacy Streamlit Dataset DNA page for CODIN compatibility workflows.
+
+The primary product UI is now the React studio served by FastAPI.
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -14,7 +20,7 @@ from ui_shell import (
     sync_workspace_query_params,
 )
 
-st.set_page_config(page_title="Dataset DNA", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Legacy Dataset DNA - CODIN", page_icon="🧬", layout="wide")
 
 load_css()
 ensure_session_state()
@@ -56,6 +62,7 @@ render_page_shell(
     accent="analysis",
 )
 render_workspace_banner()
+st.info(f"Primary React studio: {API_URL}/data")
 render_section_intro(
     "Profile Readout",
     "A single place to evaluate dataset quality and modeling readiness.",

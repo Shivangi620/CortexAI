@@ -1,3 +1,9 @@
+"""
+Legacy Streamlit Training page for CODIN compatibility workflows.
+
+The primary product UI is now the React studio served by FastAPI.
+"""
+
 import streamlit as st
 import requests
 import time
@@ -12,7 +18,7 @@ from ui_shell import (
     render_workspace_banner,
 )
 
-st.set_page_config(page_title="Live Training & Results", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Legacy Training Lab - CODIN", page_icon="⚡", layout="wide")
 
 load_css()
 ensure_session_state()
@@ -48,6 +54,7 @@ render_page_shell(
     accent="lab",
 )
 render_workspace_banner()
+st.info(f"Primary React studio: {API_URL}/training")
 render_section_intro(
     "Run Monitor",
     "The lab keeps the training log and score trajectory visible while the backend works.",

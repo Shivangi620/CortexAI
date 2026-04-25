@@ -1,3 +1,10 @@
+"""
+Legacy Streamlit landing page for CODIN.
+
+The primary product UI is now the React studio served by FastAPI.
+This module remains as a compatibility shell for older Streamlit-based flows.
+"""
+
 import streamlit as st
 
 from ui_shell import (
@@ -13,7 +20,7 @@ from ui_shell import (
 )
 
 st.set_page_config(
-    page_title="AutoML Studio",
+    page_title="CODIN Legacy Console",
     page_icon="✨",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -30,9 +37,9 @@ failed = overview["failed"]
 backend_ok = overview["backend_ok"]
 
 render_page_shell(
-    title="AutoML Studio",
-    eyebrow="Machine Learning Command Center",
-    description="Upload tabular data, orchestrate training, inspect model behavior, monitor drift, and work with AI utilities from one cohesive control surface.",
+    title="CODIN Legacy Console",
+    eyebrow="Legacy Streamlit Support Surface",
+    description="This Streamlit shell is still available for older workflows, but the primary CODIN experience now lives in the React studio served by FastAPI.",
     stats=[
         ("Tracked Runs", total),
         ("Completed", completed),
@@ -42,6 +49,10 @@ render_page_shell(
 )
 render_backend_notice(backend_ok)
 render_workspace_banner()
+
+st.info(
+    f"Primary studio: {API_URL}/overview | Results: {API_URL}/results | Tools: {API_URL}/tools"
+)
 
 st.markdown(
     """
@@ -56,9 +67,9 @@ st.markdown(
 render_focus_strip(
     [
         ("Core Track", "Supervised, unsupervised, and reinforcement learning built into the app narrative."),
-        ("Algorithm Deck", "Linear models, trees, forests, SVM, KNN, and PCA are highlighted across training pages."),
-        ("Evaluation", "Classification and regression metrics stay visible from training to results."),
-        ("Prep Layer", "Normalization, standardization, imputation, and encoding are surfaced before model launch."),
+        ("Algorithm Deck", "The React studio now carries the main training, results, monitoring, and tools surfaces."),
+        ("Evaluation", "Winning-run review, drift checks, and threshold tables live in the modern Results room."),
+        ("Prep Layer", "Keep this Streamlit entry for compatibility, while the React app remains the primary control surface."),
     ]
 )
 
@@ -116,14 +127,14 @@ st.markdown(
         <div class="command-card">
             <span class="command-card__eyebrow">Decisioning</span>
             <div class="command-card__title">Model Route Map</div>
-            <div class="command-card__copy">Move from upload to leakage detection, training, explainability, and drift review with clearer handoff points between pages.</div>
-            <div class="command-card__meta">Faster flow between tools</div>
+            <div class="command-card__copy">Move into the React studio for the current upload, leakage, training, explainability, drift, and advanced tooling flow.</div>
+            <div class="command-card__meta">React studio is primary</div>
         </div>
         <div class="command-card">
             <span class="command-card__eyebrow">Operator Mode</span>
-            <div class="command-card__title">Futuristic HUD</div>
-            <div class="command-card__copy">The new shell uses animated scanlines, orbit rings, glow depth, and stronger contrast so the dark mode feels intentional and premium.</div>
-            <div class="command-card__meta">New dark theme activated</div>
+            <div class="command-card__title">Legacy Compatibility</div>
+            <div class="command-card__copy">This page is kept around for older Streamlit-oriented workflows and utility modules while the active product experience continues in the React shell.</div>
+            <div class="command-card__meta">Compatibility surface</div>
         </div>
     </div>
     """,
@@ -131,7 +142,7 @@ st.markdown(
 )
 
 # ── Navigation Cards ──────────────────────────────────────────────────────────
-st.markdown("### Neural Navigation", unsafe_allow_html=True)
+st.markdown("### Legacy Navigation", unsafe_allow_html=True)
 
 nav_data = [
     ("🏠 Home", "Upload dataset & configure training", "pages/1_Home.py"),
@@ -161,13 +172,12 @@ for i, (title, desc, _) in enumerate(nav_data):
             <div class="nav-tile__icon">{icon}</div>
             <div class="nav-tile__title">{name}</div>
             <div class="nav-tile__desc">{desc}</div>
-            <div class="nav-tile__cta">Open from sidebar and keep your workspace state</div>
+            <div class="nav-tile__cta">Legacy page route retained for compatibility</div>
         </div>
         """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="mission-footer-note">
-    Select any page from the sidebar to enter upload, training, monitoring, or AI utility workflows.
+    For the current product workflow, prefer the React studio endpoints exposed by FastAPI.
 </div>
 """, unsafe_allow_html=True)
-

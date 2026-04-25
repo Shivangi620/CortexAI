@@ -1,7 +1,6 @@
 import React from "react";
 import {
   DataTable,
-  DetailJson,
   KeyValueList,
   Message,
   PageHero,
@@ -11,8 +10,52 @@ import {
   TimelineList,
   MiniAreaChart,
   LineageTree,
+  SegmentedControl,
 } from "../components/ui.jsx";
 import { formatDate, formatNumber } from "../lib/format.js";
+
+function isLowerBetter(metricName) {
+  const metric = String(metricName || "").toLowerCase();
+  return metric.includes("rmse") || metric.includes("mse") || metric.includes("mae");
+}
+
+function compareRuns(left, right) {
+  const leftScore = Number(left?.score);
+  const rightScore = Number(right?.score);
+  const leftFinite = Number.isFinite(leftScore);
+  const rightFinite = Number.isFinite(rightScore);
+  if (!leftFinite && !rightFinite) return 0;
+  if (!leftFinite) return 1;
+  if (!rightFinite) return -1;
+
+  const lowerBetter = isLowerBetter(left?.metric_name || right?.metric_name);
+  return lowerBetter ? leftScore - rightScore : rightScore - leftScore;
+}
+
+function scoreText(run) {
+  if (!run) return "—";
+  return `${run.metric_name || "Score"} • ${formatNumber(run.score, 4)}`;
+}
+
+function validationSummaryForRun(run) {
+  return run?.metrics?.validation_summary || {};
+}
+
+function validationStatusText(run) {
+  const status = String(validationSummaryForRun(run)?.status || "")
+    .replaceAll("_", " ")
+    .trim();
+  if (!status) return "—";
+  return status.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function launchOriginText(run) {
+  return run?.launch_label || (run?.launch_source === "drift_recommendation" ? "Drift Reopen" : "Manual");
+}
+
+function launchOriginSuffix(run) {
+  return run?.launch_source === "drift_recommendation" ? " • Drift Reopen" : "";
+}
 
 export function TrackingPage({
   experiments,
@@ -39,8 +82,12 @@ export function TrackingPage({
   datasetVersions,
 }) {
   const filteredDatasets = datasets.filter((ds) => forms.showArchived || !ds.archived);
+  const filteredExperiments =
+    forms.runOriginFilter === "Drift Reopen"
+      ? experiments.filter((run) => run.launch_source === "drift_recommendation")
+      : experiments;
   const selectedDataset = datasets.find((ds) => ds.id === selectedDatasetId);
-  const experimentOptions = experiments.slice(0, 50);
+  const experimentOptions = filteredExperiments.slice(0, 50);
   const selectedDiffRunA = experimentOptions.find((run) => run.id === forms.diffRunA || run.job_id === forms.diffRunA);
   const selectedDiffRunB = experimentOptions.find((run) => run.id === forms.diffRunB || run.job_id === forms.diffRunB);
   const selectedCompareIds = String(forms.compareExperimentIds || "")
@@ -54,21 +101,37 @@ export function TrackingPage({
       : Math.max(
           0,
           100 -
-            timelineItems.reduce((acc, item) => acc + Math.abs(Number(item.cols || 0) - Number(timelineItems[0]?.cols || 0)), 0) /
+            timelineItems.reduce(
+              (acc, item) => acc + Math.abs(Number(item.cols || 0) - Number(timelineItems[0]?.cols || 0)),
+              0,
+            ) /
               Math.max(timelineItems.length - 1, 1),
         );
   const avgHealthProxy =
     selectedDataset?.missing_pct !== undefined && selectedDataset?.missing_pct !== null
       ? Math.max(0, Math.round(100 - Number(selectedDataset.missing_pct || 0)))
       : "—";
-  const topBattlegroundRuns = [...experiments]
+  const bestScoredExperiments = [...filteredExperiments]
     .filter((run) => run.score !== null && run.score !== undefined)
-    .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))
-    .slice(0, 2);
+    .sort(compareRuns);
+  const topBattlegroundRuns = bestScoredExperiments.slice(0, 2);
   const battlegroundDelta =
     topBattlegroundRuns.length === 2
-      ? (Number(topBattlegroundRuns[0].score || 0) - Number(topBattlegroundRuns[1].score || 0)).toFixed(2)
+      ? Math.abs(Number(topBattlegroundRuns[0].score || 0) - Number(topBattlegroundRuns[1].score || 0)).toFixed(2)
       : null;
+  const topValidationRiskRuns = [...filteredExperiments]
+    .filter(
+      (run) =>
+        validationSummaryForRun(run)?.absolute_gap_display !== undefined &&
+        validationSummaryForRun(run)?.absolute_gap_display !== null,
+    )
+    .sort(
+      (left, right) =>
+        Number(validationSummaryForRun(right)?.absolute_gap_display || 0) -
+        Number(validationSummaryForRun(left)?.absolute_gap_display || 0),
+    )
+    .slice(0, 3);
+  const driftReopenCount = experiments.filter((run) => run.launch_source === "drift_recommendation").length;
 
   return (
     <>
@@ -80,15 +143,33 @@ export function TrackingPage({
           { label: "Experiments", value: experiments.length, detail: "stored comparisons" },
           { label: "Workspaces", value: workspaces.length, detail: "persistent contexts" },
           { label: "Compared runs", value: compareResult?.count || 0, detail: "current compare set" },
-          { label: "Notes loaded", value: notesResult?.notes?.length || 0, detail: "collaboration context" },
+          { label: "Drift Reopens", value: driftReopenCount, detail: "monitoring-triggered runs" },
         ]}
       />
 
       <div className="grid grid--stats">
-        <StatCard label="Top experiment" value={experiments[0]?.model_name || "—"} detail={experiments[0]?.metric_name || "no metric yet"} tone="warning" />
-        <StatCard label="Top score" value={formatNumber(experiments[0]?.score)} detail="most recent experiment" />
-        <StatCard label="Workspace resume" value={workspaces[0]?.name || "—"} detail="latest saved studio space" tone="success" />
-        <StatCard label="Compare set" value={compareResult?.comparison?.length || 0} detail="side-by-side runs" />
+        <StatCard
+          label="Top experiment"
+          value={bestScoredExperiments[0]?.model_name || "—"}
+          detail={
+            bestScoredExperiments[0]
+              ? `${bestScoredExperiments[0]?.metric_name || "Score"} • ${launchOriginText(bestScoredExperiments[0])}`
+              : "no metric yet"
+          }
+          tone="warning"
+        />
+        <StatCard
+          label="Top score"
+          value={formatNumber(bestScoredExperiments[0]?.score, 4)}
+          detail={bestScoredExperiments[0]?.metric_name || "best scored experiment"}
+        />
+        <StatCard
+          label="Workspace resume"
+          value={workspaces[0]?.name || "—"}
+          detail="latest saved studio space"
+          tone="success"
+        />
+        <StatCard label="Run filter" value={forms.runOriginFilter || "All"} detail="current registry lens" />
       </div>
 
       <Panel title="🗂 Dataset Manager" subtitle="Refresh catalog, load datasets, or manage archives.">
@@ -100,27 +181,38 @@ export function TrackingPage({
           />
           <div className="field">
             <span>Dataset Catalog</span>
-            <select
-              value={selectedDatasetId}
-              onChange={(e) => setSelectedDatasetId(e.target.value)}
-            >
+            <select value={selectedDatasetId} onChange={(e) => setSelectedDatasetId(e.target.value)}>
               <option value="">Select a dataset...</option>
               {filteredDatasets.map((ds) => (
                 <option key={ds.id} value={ds.id}>
-                  {ds.display_name || ds.source_type} • {ds.rows} rows • {ds.id.slice(0, 8)} {ds.archived ? "(archived)" : ""}
+                  {ds.display_name || ds.source_type} • {ds.rows} rows • {ds.id.slice(0, 8)}{" "}
+                  {ds.archived ? "(archived)" : ""}
                 </option>
               ))}
             </select>
           </div>
           <div className="grid grid--two">
-            <button className="button button--secondary" onClick={() => handleArchive(selectedDatasetId, !selectedDataset?.archived)} disabled={!selectedDatasetId}>
+            <button
+              className="button button--secondary"
+              onClick={() => handleArchive(selectedDatasetId, !selectedDataset?.archived)}
+              disabled={!selectedDatasetId}
+            >
               {selectedDataset?.archived ? "Unarchive" : "Archive"}
             </button>
-            <button className="button button--ghost" onClick={() => setSelectedDatasetId("")} disabled={!selectedDatasetId}>
+            <button
+              className="button button--ghost"
+              onClick={() => setSelectedDatasetId("")}
+              disabled={!selectedDatasetId}
+            >
               Remove From Workspace
             </button>
           </div>
-          <button className="button" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => handleDeleteDataset(selectedDatasetId)} disabled={!selectedDatasetId}>
+          <button
+            className="button"
+            style={{ color: "var(--danger)", borderColor: "var(--danger)" }}
+            onClick={() => handleDeleteDataset(selectedDatasetId)}
+            disabled={!selectedDatasetId}
+          >
             Delete Permanently
           </button>
         </div>
@@ -128,24 +220,40 @@ export function TrackingPage({
       <div className="grid grid--two">
         <Panel title="Model Lineage Tree" subtitle="Trace the full audit trail from raw data to production mission.">
           <LineageTree
-            nodes={datasetLineage?.nodes || [
-              { id: "1", type: "Dataset", label: "Raw Ingestion", detail: "raw_data_v1.csv" },
-              { id: "2", type: "Processing", label: "Feature Engineering", detail: "8 columns added" },
-              { id: "3", type: "Training", label: "Mission: Alpha", detail: "XGBoost • Score: 0.92" },
-            ]}
+            nodes={
+              datasetLineage?.nodes || [
+                { id: "1", type: "Dataset", label: "Raw Ingestion", detail: "raw_data_v1.csv" },
+                { id: "2", type: "Processing", label: "Feature Engineering", detail: "8 columns added" },
+                { id: "3", type: "Training", label: "Mission: Alpha", detail: "XGBoost • Score: 0.92" },
+              ]
+            }
           />
         </Panel>
-        <Panel title="Dataset Time-Machine" subtitle="Historical snapshots of data DNA. Monitor schema evolution, null rates, and quality drift.">
+        <Panel
+          title="Dataset Time-Machine"
+          subtitle="Historical snapshots of data DNA. Monitor schema evolution, null rates, and quality drift."
+        >
           <div className="stack">
             <div className="split">
-              <StatCard label="Schema Stability" value={typeof schemaStability === "number" ? `${Math.round(schemaStability)}%` : "—"} detail="lineage consistency" tone="success" />
-              <StatCard label="Avg. Health" value={typeof avgHealthProxy === "number" ? `${avgHealthProxy}/100` : "—"} detail="missingness-adjusted proxy" />
+              <StatCard
+                label="Schema Stability"
+                value={typeof schemaStability === "number" ? `${Math.round(schemaStability)}%` : "—"}
+                detail="lineage consistency"
+                tone="success"
+              />
+              <StatCard
+                label="Avg. Health"
+                value={typeof avgHealthProxy === "number" ? `${avgHealthProxy}/100` : "—"}
+                detail="missingness-adjusted proxy"
+              />
             </div>
             <MiniAreaChart
-              points={(timelineItems.length ? timelineItems.slice().reverse() : datasets.slice().reverse()).map((d) => ({
-                label: String(d.dataset_id || d.id).slice(0, 8),
-                value: d.rows || 0,
-              }))}
+              points={(timelineItems.length ? timelineItems.slice().reverse() : datasets.slice().reverse()).map(
+                (d) => ({
+                  label: String(d.dataset_id || d.id).slice(0, 8),
+                  value: d.rows || 0,
+                }),
+              )}
               valueKey="value"
               labelKey="label"
             />
@@ -158,7 +266,9 @@ export function TrackingPage({
             />
             {datasetVersions?.profile_diff && (
               <div className="message message--accent tiny">
-                Row delta: {formatNumber(datasetVersions.profile_diff.rows)} • Column delta: {formatNumber(datasetVersions.profile_diff.cols)} • Missingness delta: {formatNumber(datasetVersions.profile_diff.missing_pct)}%
+                Row delta: {formatNumber(datasetVersions.profile_diff.rows)} • Column delta:{" "}
+                {formatNumber(datasetVersions.profile_diff.cols)} • Missingness delta:{" "}
+                {formatNumber(datasetVersions.profile_diff.missing_pct)}%
               </div>
             )}
           </div>
@@ -173,7 +283,8 @@ export function TrackingPage({
                   <option value="">Select run A...</option>
                   {experimentOptions.map((run) => (
                     <option key={`diff-a-${run.id}`} value={run.id}>
-                      {run.model_name || "Run"} • {String(run.id).slice(0, 8)} • {formatNumber(run.score)}
+                      {run.model_name || "Run"} • {String(run.id).slice(0, 8)} • {scoreText(run)}
+                      {launchOriginSuffix(run)}
                     </option>
                   ))}
                 </select>
@@ -184,7 +295,8 @@ export function TrackingPage({
                   <option value="">Select run B...</option>
                   {experimentOptions.map((run) => (
                     <option key={`diff-b-${run.id}`} value={run.id}>
-                      {run.model_name || "Run"} • {String(run.id).slice(0, 8)} • {formatNumber(run.score)}
+                      {run.model_name || "Run"} • {String(run.id).slice(0, 8)} • {scoreText(run)}
+                      {launchOriginSuffix(run)}
                     </option>
                   ))}
                 </select>
@@ -195,12 +307,20 @@ export function TrackingPage({
                 <StatCard
                   label="Run A"
                   value={selectedDiffRunA?.model_name || "—"}
-                  detail={selectedDiffRunA ? `${selectedDiffRunA.metric_name || "metric"} • ${formatNumber(selectedDiffRunA.score)}` : "select a run"}
+                  detail={
+                    selectedDiffRunA
+                      ? `${scoreText(selectedDiffRunA)} • ${launchOriginText(selectedDiffRunA)}`
+                      : "select a run"
+                  }
                 />
                 <StatCard
                   label="Run B"
                   value={selectedDiffRunB?.model_name || "—"}
-                  detail={selectedDiffRunB ? `${selectedDiffRunB.metric_name || "metric"} • ${formatNumber(selectedDiffRunB.score)}` : "select a run"}
+                  detail={
+                    selectedDiffRunB
+                      ? `${scoreText(selectedDiffRunB)} • ${launchOriginText(selectedDiffRunB)}`
+                      : "select a run"
+                  }
                   tone="accent"
                 />
               </div>
@@ -231,25 +351,29 @@ export function TrackingPage({
       </div>
 
       <div className="grid grid--two">
-        <Panel title="Multi-Model Battleground" subtitle="Pit two models against each other on the latest workspace slice.">
+        <Panel
+          title="Multi-Model Battleground"
+          subtitle="Pit two models against each other on the latest workspace slice."
+        >
           <div className="stack">
             {topBattlegroundRuns.length >= 2 ? (
               <>
                 <div className="split">
                   <StatCard
                     label="Challenger A"
-                    value={formatNumber(topBattlegroundRuns[0].score)}
-                    detail={topBattlegroundRuns[0].model_name || "Unknown model"}
+                    value={formatNumber(topBattlegroundRuns[0].score, 4)}
+                    detail={`${topBattlegroundRuns[0].model_name || "Unknown model"} • ${topBattlegroundRuns[0].metric_name || "Score"} • ${launchOriginText(topBattlegroundRuns[0])}`}
                     tone="accent"
                   />
                   <StatCard
                     label="Challenger B"
-                    value={formatNumber(topBattlegroundRuns[1].score)}
-                    detail={topBattlegroundRuns[1].model_name || "Unknown model"}
+                    value={formatNumber(topBattlegroundRuns[1].score, 4)}
+                    detail={`${topBattlegroundRuns[1].model_name || "Unknown model"} • ${topBattlegroundRuns[1].metric_name || "Score"} • ${launchOriginText(topBattlegroundRuns[1])}`}
                   />
                 </div>
                 <div className="message message--warning tiny">
-                  <strong>Winner: {topBattlegroundRuns[0].model_name}</strong> ({battlegroundDelta} point lift over {topBattlegroundRuns[1].model_name})
+                  <strong>Winner: {topBattlegroundRuns[0].model_name}</strong> ({battlegroundDelta} point gap over{" "}
+                  {topBattlegroundRuns[1].model_name})
                 </div>
               </>
             ) : (
@@ -258,11 +382,18 @@ export function TrackingPage({
           </div>
         </Panel>
 
-        <Panel title="Comparison Arena" subtitle="Select multiple experiments to see side-by-side hyperparameters and metrics.">
+        <Panel
+          title="Comparison Arena"
+          subtitle="Select multiple experiments to see side-by-side hyperparameters and metrics."
+        >
           <div className="stack">
             <label className="field">
               <span>Experiment IDs (comma separated)</span>
-              <input value={forms.compareExperimentIds} onChange={(event) => patchForm("compareExperimentIds", event.target.value)} placeholder="Paste experiment IDs or job IDs..." />
+              <input
+                value={forms.compareExperimentIds}
+                onChange={(event) => patchForm("compareExperimentIds", event.target.value)}
+                placeholder="Paste experiment IDs or job IDs..."
+              />
             </label>
             <div className="stack compact">
               <span className="tiny-eyebrow">Quick pick recent runs</span>
@@ -284,7 +415,10 @@ export function TrackingPage({
                           patchForm("compareExperimentIds", Array.from(next).join(", "));
                         }}
                       />
-                      <span>{run.model_name || "Run"} • {String(run.id).slice(0, 8)}</span>
+                      <span>
+                        {run.model_name || "Run"} • {String(run.id).slice(0, 8)}
+                        {launchOriginSuffix(run)}
+                      </span>
                     </label>
                   );
                 })}
@@ -304,9 +438,12 @@ export function TrackingPage({
                 {compareResult.comparison.map((run) => (
                   <div key={run.id} className="stack box">
                     <strong>{run.model_name}</strong>
-                    <p className="tiny">{run.metric_name}: {formatNumber(run.score)}</p>
+                    <p className="tiny">{scoreText(run)}</p>
+                    <p className="tiny">{launchOriginText(run)}</p>
                     <KeyValueList
-                      items={Object.entries(run.hyperparams || {}).slice(0, 4).map(([label, value]) => ({ label, value: String(value) }))}
+                      items={Object.entries(run.hyperparams || {})
+                        .slice(0, 4)
+                        .map(([label, value]) => ({ label, value: String(value) }))}
                     />
                   </div>
                 ))}
@@ -314,19 +451,75 @@ export function TrackingPage({
             )}
           </div>
         </Panel>
+
+        <Panel
+          title="Validation drift ledger"
+          subtitle="Largest holdout-vs-CV gaps rise to the top so unstable leaders are easier to spot."
+        >
+          {topValidationRiskRuns.length ? (
+            <DataTable
+              compact
+              columns={[
+                { key: "model_name", label: "Model" },
+                { key: "launch_label", label: "Origin", render: (row) => launchOriginText(row) },
+                { key: "metric_name", label: "Metric" },
+                { key: "validation_status", label: "Status", render: (row) => validationStatusText(row) },
+                {
+                  key: "cv_score",
+                  label: "CV",
+                  render: (row) => formatNumber(validationSummaryForRun(row)?.cv_score, 4),
+                },
+                {
+                  key: "holdout_score",
+                  label: "Holdout",
+                  render: (row) => formatNumber(validationSummaryForRun(row)?.holdout_score, 4),
+                },
+                {
+                  key: "absolute_gap_display",
+                  label: "Gap",
+                  render: (row) => formatNumber(validationSummaryForRun(row)?.absolute_gap_display, 4),
+                },
+              ]}
+              rows={topValidationRiskRuns}
+            />
+          ) : (
+            <Message text="Validation drift details are not available yet for tracked runs." />
+          )}
+        </Panel>
       </div>
 
-      <Panel title="Operational registry" subtitle="A complete history of every automated mission performed in this workspace.">
+      <Panel
+        title="Operational registry"
+        subtitle="A complete history of every automated mission performed in this workspace."
+      >
+        <div className="inline-actions" style={{ marginBottom: "1rem" }}>
+          <SegmentedControl
+            options={["All", "Drift Reopen"]}
+            value={forms.runOriginFilter || "All"}
+            onChange={(value) => patchForm("runOriginFilter", value)}
+          />
+        </div>
         <DataTable
           columns={[
             { key: "id", label: "Run ID", render: (row) => row.id.slice(0, 10) },
             { key: "model_name", label: "Model" },
+            { key: "launch_label", label: "Origin" },
             { key: "task_type", label: "Task" },
             { key: "metric_name", label: "Metric" },
-            { key: "score", label: "Score", render: (row) => formatNumber(row.score) },
+            { key: "score", label: "Score", render: (row) => formatNumber(row.score, 4) },
+            {
+              key: "validation_status",
+              label: "Validation",
+              render: (row) => validationStatusText(row),
+            },
+            {
+              key: "validation_gap",
+              label: "CV-Holdout Gap",
+              render: (row) => formatNumber(validationSummaryForRun(row)?.absolute_gap_display, 4),
+            },
             { key: "created_at", label: "Created", render: (row) => formatDate(row.created_at) },
           ]}
-          rows={experiments}
+          rows={filteredExperiments}
           empty="No experiment history is available yet."
         />
       </Panel>
@@ -336,20 +529,37 @@ export function TrackingPage({
           <div className="split">
             <label className="field">
               <span>Entity type</span>
-              <input value={forms.noteEntityType} onChange={(event) => patchForm("noteEntityType", event.target.value)} placeholder="job, experiment, dataset" />
+              <input
+                value={forms.noteEntityType}
+                onChange={(event) => patchForm("noteEntityType", event.target.value)}
+                placeholder="job, experiment, dataset"
+              />
             </label>
             <label className="field">
               <span>Entity ID</span>
-              <input value={forms.noteEntityId} onChange={(event) => patchForm("noteEntityId", event.target.value)} placeholder="target entity id" />
+              <input
+                value={forms.noteEntityId}
+                onChange={(event) => patchForm("noteEntityId", event.target.value)}
+                placeholder="target entity id"
+              />
             </label>
           </div>
           <label className="field">
             <span>Annotation text</span>
-            <textarea rows="4" value={forms.noteText} onChange={(event) => patchForm("noteText", event.target.value)} placeholder="Why does this run matter?" />
+            <textarea
+              rows="4"
+              value={forms.noteText}
+              onChange={(event) => patchForm("noteText", event.target.value)}
+              placeholder="Why does this run matter?"
+            />
           </label>
           <div className="inline-actions">
-            <button className="button button--secondary" type="button" onClick={fetchNotes}>Load Notes</button>
-            <button className="button button--primary" type="submit">Save Annotation</button>
+            <button className="button button--secondary" type="button" onClick={fetchNotes}>
+              Load Notes
+            </button>
+            <button className="button button--primary" type="submit">
+              Save Annotation
+            </button>
           </div>
           <Message text={notesMessage} />
           {notesResult?.notes?.length > 0 && (

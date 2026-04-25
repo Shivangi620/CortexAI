@@ -8,136 +8,268 @@ app_port: 7860
 pinned: false
 ---
 
-# 🎨 AutoML Studio
+# Inferyx
 
-This repository is configured to run on Hugging Face Spaces as a single Docker Space that serves:
+Inferyx is an end-to-end AutoML workspace built around a React single-page frontend, a FastAPI backend, and a Celery worker for background training. It supports dataset ingestion, profiling, training orchestration, results review, experiment tracking, drift monitoring, scenario analysis, synthetic data generation, and export workflows from one studio.
 
-- A React frontend bundle through FastAPI and Nginx on public port `7860`
-- FastAPI backend internally on `127.0.0.1:8000`
-- Celery worker plus Redis inside the same container for background training jobs
+The live product is the React studio served by FastAPI. There are still some legacy Python frontend helpers in `frontend/`, but the primary UI path today is:
 
-![Python](https://img.shields.io/badge/python-3.8%2B-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)
-![License](https://img.shields.io/badge/license-MIT-green)
+- React app source in `frontend/react-src/`
+- built assets in `frontend/static/`
+- FastAPI API and asset serving from `backend/`
 
-AutoML Studio is a high-performance, intelligent end-to-end automated machine learning platform. It empowers anyone to upload tabular datasets, leverage "Dataset DNA" heuristics to automatically preprocess data, logically isolate the most appropriate algorithms, and train competitive ML models through a web frontend paired with a **FastAPI** backend.
+The repo now treats generated assets, editor-only files, and scratch fixtures as local development artifacts unless they are part of a documented runtime path.
 
-![AutoML Studio Dashboard](./assets/dashboard_preview.png)
-*(Placeholder: Add a screenshot or GIF of the dashboard here)*
+## What the Studio Does
 
-## ✨ Features
+- Ingests datasets from common tabular and document-style formats
+- Profiles data quality, target hints, leakage, and lineage
+- Runs AutoML training with progress telemetry and reasoning updates
+- Reviews winning runs with leaderboard, validation drift, thresholds, and explainability
+- Supports scenario simulation, future sweep, single prediction, counterfactuals, and ensemble building
+- Tracks experiments, notes, workspace history, and drift schedules
+- Exports model bundles, reports, and model cards
 
-- **Dataset DNA Analyzer**: Instantly parses uploaded datasets (CSV, JSON, Excel, Parquet) to automatically determine shape, calculate missing value distributions, identify imbalances, and heuristically suggest target configurations.
-- **Auto-Imputing & Auto-Encoding**: You never have to manually clean data again. The backend seamlessly applies `ColumnTransformers`, routing numeric data through Medians/StandardScalers and categorical data through Constant/OneHotEncoders safely.
-- **Smart Model Selection (Pro Mode)**: It doesn't test blindly. It evaluates the exact shape and taxonomy of your dataset to dynamically build a tailored algorithmic roster (e.g. leveraging `SVM` for small datasets, and unleashing `XGBoost` for high-dimensional complexity).
-- **Time Travel Training Logs**: View live metric updates as pipelines iteratively optimize.
-- **Auto Report (Story Mode)**: Generates an automated "wrap-up" narrative explaining what data was analyzed, which algorithm dominated, and *why* it succeeded.
-- **Deep Insights**: Explore exactly where the model fails via the Mistake Analyzer, view low-confidence classifications, and receive "Explain-Like-I'm-5" ML coaching strategies.
-- **One-Click Deploy Bundles**: Automatically bundles and exports your trained `.pkl` model directly beside a custom-written `FastAPI` script, giving you a deployment-ready inference server in 1 click!
+## Current Stack
 
----
+- Frontend: React 19 + esbuild bundle script
+- Backend: FastAPI
+- Worker queue: Celery + Redis
+- ML layer: scikit-learn, LightGBM, XGBoost, Optuna, custom training services
+- Persistence: SQLAlchemy-backed local database plus run artifacts on disk
 
-## 🏗️ Architecture
+## Repository Layout
 
 ```text
-AutoML Studio
-├── frontend/
-│   ├── react-src/             # React source for the served SPA
-│   ├── static/                # Generated frontend bundle
-│   └── app.py                 # Legacy Streamlit entry point
+CODIN/
 ├── backend/
-│   ├── main.py               # FastAPI entry point
-│   └── core/
-│       ├── data_profiler.py  # Dataset heuristic extraction logic
-│       ├── insights.py       # Narrative generation and AI coaching synthesis
-│       └── export.py         # ZIP creation for trained model bundles
-├── requirements.txt          # Shared dependencies
-├── start.sh                  # Docker / HF launcher
-├── run.sh                    # Local development launcher
+│   ├── api/routes/                  # FastAPI route modules
+│   ├── core/                        # loaders, export, synthetic, pipeline utilities
+│   ├── services/                    # orchestration and training services
+│   ├── tests/                       # backend tests
+│   └── main.py                      # FastAPI entry point
+├── frontend/
+│   ├── react-src/                   # React source for the studio
+│   ├── static/                      # built frontend bundle served by FastAPI
+│   ├── app.py                       # legacy frontend entry
+│   └── *.py                         # legacy frontend support helpers
+├── scripts/
+│   ├── build-frontend.mjs           # frontend bundle build
+│   └── run-ruff.mjs                # repo-local Python lint launcher
+├── run.sh                           # supported local Linux/macOS launcher
+├── run_windows.bat                  # supported local Windows launcher
+├── start_windows.bat                # compatibility wrapper for run_windows.bat
+├── start.sh                         # supported container / deployed launcher
+├── docker-compose.yml               # supported local container stack
+├── FEATURE.md                       # product + architecture guide
+├── PROJECT_LOGIC.md                 # feature-by-feature logic and system flow map
 └── README.md
 ```
 
----
+## Studio Pages
 
-## 🚀 Installation & Usage
+The React studio is organized into these main surfaces:
+
+1. `Overview` - workspace pulse, uploads, connectors, import modes
+2. `Data` - profiling, health, repair, lineage, leakage, merge preview
+3. `Training` - progress rail, neural telemetry, reasoning, completed-run snapshot
+4. `Results` - outcome brief, metrics, drift, leaderboard, thresholds, explainability, artifacts
+5. `Tracking` - experiments, notes, history, diffs, workspaces
+6. `Monitoring` - drift detection, schedules, retraining, prediction, scenario context
+7. `Tools` - ensemble builder, synthetic data, natural-language helpers, batch tooling
+
+## Supported Intake
+
+The app currently advertises broad upload support through the frontend and shared loader path, including:
+
+- `.csv`, `.tsv`
+- `.xlsx`, `.xls`
+- `.json`
+- `.parquet`, `.feather`
+- `.pdf`
+- `.txt`
+- `.html`, `.htm`
+- `.xml`
+- `.zip`
+- `.sav` (SPSS)
+- `.sas7bdat`
+- `.dta`
+
+Connector-based import is also available from the studio for SQL-style sources.
+
+## Quality Gate
+
+Repo-local checks live in `package.json` so they can run the same way on Linux, macOS, and Windows:
+
+```bash
+npm run lint:python
+npm run lint:frontend
+npm run format:check:frontend
+npm run quality
+```
+
+Helpful local commands:
+
+- `npm run format:frontend` reformats the React app, bundle scripts, and top-level JSON/Markdown files
+- `npm run quality` runs Python linting, frontend linting, and a frontend build
+- `CODIN_RUN_QUALITY=1 bash run.sh` runs the gate before launching the local Linux/macOS stack
+
+Python linting is powered by `ruff` through `requirements.txt`. Frontend linting/formatting is local to this repo through ESLint and Prettier.
+The Python lint gate is intentionally scoped to the active backend product path.
+
+## Supported Runtime Paths
 
 ### Prerequisites
-- Python 3.8+ 
-- `pip` package manager
 
-### 1. Setup Environment
-Clone the repository and set up a virtual environment:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
+- Python 3.10+ recommended
+- Node.js + npm
+- Redis
+- Bash on Linux/macOS, or Command Prompt / PowerShell on Windows
 
-### 2. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
+### Linux / macOS
 
-### 3. Quick Start (Recommended)
-You can launch the FastAPI backend, worker stack, and React frontend build using the provided shell script:
 ```bash
 bash run.sh
 ```
 
-### 4. Manual Launch
-If you prefer to run it manually:
-1. **Start the backend:**
-```bash
-cd backend
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-2. **Open the app:** `http://localhost:8000`
+This script will:
 
----
+- create and activate `venv/` if needed
+- install Python requirements on first run
+- install frontend dependencies on first run
+- build the React frontend bundle
+- start Redis if it is not already running
+- start the Celery worker
+- start FastAPI on port `8000`
 
-## 📖 How to Use
+After startup:
 
-Once the application is live on `http://localhost:8000`, follow these steps:
+- Studio: `http://localhost:8000/overview`
+- API root: `http://localhost:8000`
+- API docs: `http://localhost:8000/docs`
 
-1. **Upload Dataset**: Navigate to the **Home** tab and drag-and-drop your dataset (CSV, JSON, Excel, or Parquet).
-2. **Review DNA**: Click on the **DNA** tab to review the automatic imputation plan and exploratory data analysis.
-3. **Train Engine**: Go to **Training & Results** to start the parallel training pipeline. Watch the time-travel metrics update live.
-4. **Export**: Once training completes, download the deployment-ready `.zip` bundle to serve your model immediately.
+Stop everything with `Ctrl+C`.
 
----
+### Windows
 
-## 🌐 Deployment Options
+Use the supported local launcher:
 
-#### Docker
-```bash
-# Build and run with Docker Compose
-docker-compose up -d
-
-# Access the app through the container's configured public port
+```bat
+run_windows.bat
 ```
 
-### Production Considerations
-- **Database**: Add PostgreSQL for production data persistence
-- **Redis**: Required for background job queuing
-- **Storage**: Use cloud storage (S3, GCS) for large model files
-- **Scaling**: Consider load balancer for multiple instances
-- **Security**: Add authentication, rate limiting, and input validation
+This script builds the frontend bundle, wires Python dependencies, and starts the backend services for a local workstation flow.
+If you still invoke `start_windows.bat`, it now delegates to `run_windows.bat` so the Windows local path stays single-sourced.
 
-### Configuration Notes
-- `PORT` controls the public Nginx listener. Default is `7860`.
-- `AUTOML_ALLOWED_ORIGINS` accepts a comma-separated CORS allowlist for the FastAPI backend.
-- `DATABASE_URL` controls the SQLAlchemy database connection string.
-- `REDIS_URL`, `CELERY_BROKER_URL`, and `CELERY_RESULT_BACKEND` control background-job transport.
+### Docker local
 
----
+Use the container stack when you want the deployed-style runtime locally:
 
-## 🤝 Contributing
+```bash
+docker compose up --build
+```
 
-Contributions are welcome! Please feel free to submit a Pull Request or open an Issue for any bugs, feature requests, or improvements.
+This path builds the image from `Dockerfile`, runs the app behind Nginx, and exposes the studio on port `7860`.
 
-## 📄 License
+### Deployed / container runtime
+
+`start.sh` is the supported launcher for container-style environments, including Spaces-style deployment. It starts:
+
+- Redis
+- FastAPI on `127.0.0.1:8000`
+- Celery
+- Nginx on the public `PORT`
+
+Important environment variables:
+
+- `PORT`
+- `REDIS_URL`
+- `CELERY_BROKER_URL`
+- `CELERY_RESULT_BACKEND`
+- `AUTOML_ALLOWED_ORIGINS`
+- `DATABASE_URL`
+- `MAX_UPLOAD_MB`
+
+The container path assumes the frontend bundle was created during image build. If you need a startup-time rebuild for debugging, set `CODIN_BUILD_FRONTEND_ON_START=1`.
+
+### Manual fallback
+
+If you want to launch pieces yourself:
+
+1. Create a virtual environment and install Python dependencies
+2. Install frontend dependencies and build the bundle:
+
+```bash
+npm install
+npm run build:frontend
+```
+
+3. Start Redis
+4. Start Celery from `backend/`:
+
+```bash
+python -m celery -A core.worker.celery_app worker --loglevel=warning --concurrency=2
+```
+
+5. Start FastAPI from `backend/`:
+
+```bash
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 600
+```
+
+## Training Flow
+
+The active training path is service-driven and roughly follows this sequence:
+
+1. Load dataset through shared loader utilities
+2. Validate dataset and target configuration
+3. Run sanitizer-driven cleaning when enabled
+4. Infer task type and prep features
+5. Build candidate model pool
+6. Run sweep and optional Optuna tuning
+7. Train the final artifact
+8. Persist metrics, drift baseline, explainability, exports, and run metadata
+
+The saved inference artifact is designed to keep train-time and serve-time preprocessing aligned.
+
+## Notes About Legacy Frontend Files
+
+You will still see files like:
+
+- `frontend/app.py`
+- `frontend/error_handler.py`
+- `frontend/state_manager.py`
+- `frontend/validators.py`
+
+Those are legacy Python frontend/support pieces. They may still be useful for older flows or utility logic, but they are not the primary UI delivery path for the current studio.
+
+## Dev Artifacts vs Product Artifacts
+
+Keep these boundaries sharp:
+
+- `frontend/react-src/` and `backend/` are product code
+- `frontend/static/` is generated output and should be rebuilt, not edited by hand
+- editor-only config such as `.vscode/` stays local and is ignored
+- generated scratch fixtures should live under ignored paths such as `tests/data/generated/`
+- one-off migration or experiment scaffolding should not become part of the documented runtime path unless it is intentionally supported
+
+## Verification
+
+Common checks during local work:
+
+```bash
+npm run build:frontend
+./venv/bin/python -m ruff check backend
+./venv/bin/pytest backend/tests/test_services.py -q
+./venv/bin/pytest backend/tests/test_api_endpoints.py -q
+```
+
+## Contributing
+
+When updating the product, keep the React frontend, top-level docs, launcher scripts, and quality scripts in sync. The most common drift in this repo comes from features landing in the studio while README and startup guidance still describe older behavior.
+
+For the deeper feature-by-feature behavior map, sequence diagrams, and endpoint contract reference, see [PROJECT_LOGIC.md](/home/aj/Documents/CODIN/PROJECT_LOGIC.md:1).
+
+## License
 
 This project is licensed under the MIT License.
-# auto_ml
-# auto_ml
-# auto_ml
-# auto-ml

@@ -6,17 +6,17 @@ import os
 import csv
 import zipfile
 from uuid import uuid4
-from typing import Optional, List, Dict, Any
+from typing import Optional
 import pandas as pd
 from sqlalchemy import create_engine
 
-from infra.database import get_db, db_session, DatasetModel
+from infra.database import db_session, DatasetModel
 from infra.result_contract import normalize_results
 from infra.storage import get_run_dir, get_model_path, get_metrics_path, get_schema_path
 from core.data_profiler import profile_dataset
 from core.health_score import compute_health_score
 from core.file_loader import SUPPORTED_EXTENSIONS, load_dataframe
-from services.data_sanitizer import sanitize_dataframe, build_dataset_version_report
+from services.data_sanitizer import sanitize_dataframe
 from services.studio_service import (
     build_lineage_graph,
     compare_dataset_versions,

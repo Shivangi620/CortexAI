@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 
 # Optional imports
 try:
@@ -92,7 +92,7 @@ class MLTracking:
 
         # Local experiment tracking DB
         try:
-            from infra.database import get_db, db_session, JobModel, ExperimentRun, DatasetModel
+            from infra.database import db_session, JobModel, ExperimentRun, DatasetModel
 
             with db_session() as db:
                 job = db.query(JobModel).filter(JobModel.id == job_id).first()
@@ -154,7 +154,7 @@ class StructuredLogger:
     def log(event, **kwargs):
         # ✅ FIX 6: safe timestamp + formatting
         try:
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         except Exception:
             timestamp = "unknown_time"
 

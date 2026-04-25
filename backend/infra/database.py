@@ -230,6 +230,33 @@ class TeamNote(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
+class ScenarioPackModel(Base):
+    __tablename__ = "scenario_packs"
+
+    id = Column(
+        String,
+        primary_key=True,
+        index=True,
+        default=lambda: __import__("uuid").uuid4().hex,
+    )
+    job_id = Column(String, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    base_mode = Column(String, nullable=True)
+    row_index = Column(String, nullable=True)
+    base_payload_json = Column(Text, nullable=True)
+    filters_json = Column(Text, nullable=True)
+    scenarios_json = Column(Text, nullable=True)
+    sweep_feature = Column(String, nullable=True)
+    sweep_values_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        onupdate=lambda: datetime.now(UTC).replace(tzinfo=None),
+    )
+
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -334,6 +361,21 @@ def _run_migrations():
             message         TEXT,
             level           TEXT,
             created_at      DATETIME
+        )""",
+        """CREATE TABLE IF NOT EXISTS scenario_packs (
+            id                TEXT PRIMARY KEY,
+            job_id            TEXT,
+            name              TEXT NOT NULL,
+            description       TEXT,
+            base_mode         TEXT,
+            row_index         TEXT,
+            base_payload_json TEXT,
+            filters_json      TEXT,
+            scenarios_json    TEXT,
+            sweep_feature     TEXT,
+            sweep_values_json TEXT,
+            created_at        DATETIME,
+            updated_at        DATETIME
         )""",
     ]
 
