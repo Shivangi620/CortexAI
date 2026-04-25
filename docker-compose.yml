@@ -8,5 +8,6 @@ services:
       - ./backend/tmp:/home/user/app/backend/tmp
     environment:
       - PORT=7860
+      - HOST=0.0.0.0
       - AUTOML_ALLOWED_ORIGINS=http://localhost:7860,http://127.0.0.1:7860
     restart: unless-stopped

@@ -169,19 +169,19 @@ Use the container stack when you want the deployed-style runtime locally:
 docker compose up --build
 ```
 
-This path builds the image from `Dockerfile`, runs the app behind Nginx, and exposes the studio on port `7860`.
+This path builds the image from `Dockerfile`, starts Redis + Celery alongside FastAPI, and exposes the studio directly on port `7860`.
 
 ### Deployed / container runtime
 
 `start.sh` is the supported launcher for container-style environments, including Spaces-style deployment. It starts:
 
 - Redis
-- FastAPI on `127.0.0.1:8000`
+- FastAPI on the public `HOST` / `PORT`
 - Celery
-- Nginx on the public `PORT`
 
 Important environment variables:
 
+- `HOST`
 - `PORT`
 - `REDIS_URL`
 - `CELERY_BROKER_URL`
@@ -191,6 +191,13 @@ Important environment variables:
 - `MAX_UPLOAD_MB`
 
 The container path assumes the frontend bundle was created during image build. If you need a startup-time rebuild for debugging, set `CODIN_BUILD_FRONTEND_ON_START=1`.
+
+For Hugging Face Spaces specifically:
+
+- keep `sdk: docker` and `app_port: 7860` in the README front matter
+- the image now uses a multi-stage build so Node is only used while building the React bundle
+- Uvicorn serves the React app and API directly on the Spaces port, which avoids non-root Nginx edge cases
+- `.dockerignore` excludes local databases, `node_modules`, `venv`, generated assets, and large data artifacts so Spaces builds stay smaller and faster
 
 ### Manual fallback
 
