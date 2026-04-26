@@ -13,35 +13,14 @@ import {
 } from "../components/ui.jsx";
 import { formatDate, formatNumber } from "../lib/format.js";
 
-function datasetDisplayName(dataset) {
-  if (!dataset) return "Unknown dataset";
-  return dataset.display_name || dataset.name || `${dataset.id?.slice(0, 8) || "dataset"}`;
-}
-
-function buildDatasetLineage(datasets, datasetId) {
-  const index = new Map((datasets || []).map((dataset) => [dataset.id, dataset]));
-  const items = [];
-  let cursor = datasetId ? index.get(datasetId) : null;
-  let guard = 0;
-  while (cursor && guard < 6) {
-    items.unshift({
-      id: cursor.id,
-      label: datasetDisplayName(cursor),
-      meta: cursor.source_type || "dataset",
-    });
-    cursor = cursor.parent_dataset_id ? index.get(cursor.parent_dataset_id) : null;
-    guard += 1;
-  }
-  return items;
-}
-
 export function OverviewPage({
-  datasets,
   jobs,
   selectedDatasetId,
   datasetProfile,
   datasetDetect,
   loading,
+  uploadLoading,
+  uploadLoadingLabel,
   forecast,
   trainingRegistryPreview,
   forms,
@@ -77,11 +56,9 @@ export function OverviewPage({
     }
   }, [uploadPreview, hasReviewableText]);
 
-  const selectedDataset = datasets.find((dataset) => dataset.id === selectedDatasetId) || null;
   const effectiveTaskType = forms.trainTaskType || datasetDetect?.task_type || "classification";
   const registryTraits = trainingRegistryPreview?.dataset_traits || {};
   const registryGroups = trainingRegistryPreview?.model_groups || {};
-  const lineageItems = buildDatasetLineage(datasets, selectedDatasetId);
   const columnStats = datasetProfile?.column_stats || {};
   const highCardinalityColumns = Object.entries(columnStats)
     .filter(([, stats]) => Number(stats?.unique_pct) >= 0.9 && String(stats?.semantic_type || "") !== "ID/Index")
@@ -142,7 +119,7 @@ export function OverviewPage({
                 ))}
               </div>
               {uploadMessage && <p className="tiny">{uploadMessage}</p>}
-              {loading && <Spinner label="Scanning dataset DNA..." />}
+              {uploadLoading && <Spinner label={uploadLoadingLabel || "Scanning dataset DNA..."} />}
             </form>
           )}
 
@@ -209,7 +186,6 @@ export function OverviewPage({
       </div>
 
       <div className="grid grid--two">
-     
         <Panel
           title="Project Score Evolution"
           subtitle="Track how your model performance has improved over historical runs."

@@ -44,6 +44,8 @@ export function App() {
   const [trainingRegistryPreview, setTrainingRegistryPreview] = useState(null);
   const [trainMessage, setTrainMessage] = useState("");
   const [uploadMessage, setUploadMessage] = useState("");
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [uploadLoadingLabel, setUploadLoadingLabel] = useState("");
   const [repairMessage, setRepairMessage] = useState("");
 
   const [jobStatus, setJobStatus] = useState(null);
@@ -556,11 +558,15 @@ export function App() {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("pdf_mode", forms.uploadPdfMode);
+    setUploadLoading(true);
+    setUploadLoadingLabel(`Ingesting ${file.name} into Mission Control...`);
+    setUploadMessage("");
     try {
       const payload = await api("/api/upload", { method: "POST", body: formData });
       if (payload.error) {
         setUploadMessage(payload.error);
       } else {
+        setUploadLoadingLabel("Analyzing the uploaded data and refreshing the workspace...");
         setUploadMessage(`Dataset ready: ${payload.dataset_id}`);
         setUploadPreview(payload.preview_records || []);
         setIngestSummary(payload.ingest_summary || {});
@@ -570,6 +576,9 @@ export function App() {
       }
     } catch (error) {
       setUploadMessage(error.message);
+    } finally {
+      setUploadLoading(false);
+      setUploadLoadingLabel("");
     }
   }
 
@@ -1509,11 +1518,12 @@ export function App() {
     page = (
       <OverviewPage
         jobs={jobs}
-        datasets={datasets}
         selectedDatasetId={selectedDatasetId}
         datasetProfile={datasetProfile}
         datasetDetect={datasetDetect}
         loading={loading}
+        uploadLoading={uploadLoading}
+        uploadLoadingLabel={uploadLoadingLabel}
         forecast={forecast}
         trainingRegistryPreview={trainingRegistryPreview}
         forms={forms}

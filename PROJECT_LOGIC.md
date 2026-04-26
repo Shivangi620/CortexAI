@@ -453,23 +453,23 @@ This section is intentionally practical rather than exhaustive. It captures the 
 
 ### Datasets routes
 
-| Endpoint | Purpose | Request shape | Response shape |
-| --- | --- | --- | --- |
-| `POST /api/upload` | upload dataset file | multipart file + `pdf_mode` form field | `dataset_id`, `profile`, `preview_records`, `ingest_summary`, optional `imported_job_id` |
-| `POST /api/import-source` | import from connector | `{source_type, connection_uri, query}` | same core dataset response as upload |
-| `POST /api/dataset/{dataset_id}/ocr-review` | convert OCR review into dataset | `{text}` | new dataset response with preview |
-| `POST /api/repair-preview` | preview cleaning effect | `{dataset_id, target_column}` | before/after cleaning summary |
-| `POST /api/repair-apply` | materialize repaired dataset | `{dataset_id, target_column}` | `dataset_id` for new repaired branch |
-| `POST /api/merge-studio` | merge datasets | `{left_dataset_id, right_dataset_id, join_key_left, join_key_right, join_type}` | merged dataset info |
-| `POST /api/merge-studio/preview` | preview join results | same merge payload | merge preview rows + stats |
-| `GET /api/datasets` | list datasets | query: `limit`, `include_archived` | dataset list |
-| `GET /api/dataset/{dataset_id}` | fetch one dataset profile | path only | profile + metadata |
-| `GET /api/health/{dataset_id}` | health score | path only | health scoring payload |
-| `POST /api/detect` | infer task type | `{dataset_id, target_column?}` | task guess, warnings, column scores |
-| `GET /api/leakage/{dataset_id}` | leakage report | optional `target_column` query | leakage findings |
-| `GET /api/dataset/{dataset_id}/timeline` | dataset history | path only | timeline entries |
-| `GET /api/dataset/{dataset_id}/lineage-graph` | dataset lineage graph | path only | graph nodes/edges |
-| `GET /api/dataset/{dataset_id}/versions` | version comparison | optional `target_column` query | version diff report |
+| Endpoint                                      | Purpose                         | Request shape                                                                   | Response shape                                                                           |
+| --------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `POST /api/upload`                            | upload dataset file             | multipart file + `pdf_mode` form field                                          | `dataset_id`, `profile`, `preview_records`, `ingest_summary`, optional `imported_job_id` |
+| `POST /api/import-source`                     | import from connector           | `{source_type, connection_uri, query}`                                          | same core dataset response as upload                                                     |
+| `POST /api/dataset/{dataset_id}/ocr-review`   | convert OCR review into dataset | `{text}`                                                                        | new dataset response with preview                                                        |
+| `POST /api/repair-preview`                    | preview cleaning effect         | `{dataset_id, target_column}`                                                   | before/after cleaning summary                                                            |
+| `POST /api/repair-apply`                      | materialize repaired dataset    | `{dataset_id, target_column}`                                                   | `dataset_id` for new repaired branch                                                     |
+| `POST /api/merge-studio`                      | merge datasets                  | `{left_dataset_id, right_dataset_id, join_key_left, join_key_right, join_type}` | merged dataset info                                                                      |
+| `POST /api/merge-studio/preview`              | preview join results            | same merge payload                                                              | merge preview rows + stats                                                               |
+| `GET /api/datasets`                           | list datasets                   | query: `limit`, `include_archived`                                              | dataset list                                                                             |
+| `GET /api/dataset/{dataset_id}`               | fetch one dataset profile       | path only                                                                       | profile + metadata                                                                       |
+| `GET /api/health/{dataset_id}`                | health score                    | path only                                                                       | health scoring payload                                                                   |
+| `POST /api/detect`                            | infer task type                 | `{dataset_id, target_column?}`                                                  | task guess, warnings, column scores                                                      |
+| `GET /api/leakage/{dataset_id}`               | leakage report                  | optional `target_column` query                                                  | leakage findings                                                                         |
+| `GET /api/dataset/{dataset_id}/timeline`      | dataset history                 | path only                                                                       | timeline entries                                                                         |
+| `GET /api/dataset/{dataset_id}/lineage-graph` | dataset lineage graph           | path only                                                                       | graph nodes/edges                                                                        |
+| `GET /api/dataset/{dataset_id}/versions`      | version comparison              | optional `target_column` query                                                  | version diff report                                                                      |
 
 ### Training routes
 
@@ -512,30 +512,30 @@ Typical response:
 
 Other high-value training endpoints:
 
-| Endpoint | Purpose | Request shape | Response shape |
-| --- | --- | --- | --- |
-| `POST /api/train/forecast` | preflight runtime and risk forecast | same core controls as training, lighter payload | forecast text, timing, warnings |
-| `POST /api/train/model-registry` | preview selected model families | dataset + target + control hints | task type, selected models, rules, advisory |
-| `GET /api/status/{job_id}` | get job status | path only | job state, history, results, config |
-| `GET /api/jobs` | list jobs | no body | recent jobs list |
-| `GET /api/leaderboard` | global leaderboard | no body | leaderboard rows |
-| `WS /api/ws/status/{job_id}` | live status stream | websocket | incremental job updates |
-| `POST /api/ensemble` | build prefit ensemble | `{job_ids, strategy, is_classification?}` style payload | ensemble summary + metrics |
+| Endpoint                         | Purpose                             | Request shape                                           | Response shape                              |
+| -------------------------------- | ----------------------------------- | ------------------------------------------------------- | ------------------------------------------- |
+| `POST /api/train/forecast`       | preflight runtime and risk forecast | same core controls as training, lighter payload         | forecast text, timing, warnings             |
+| `POST /api/train/model-registry` | preview selected model families     | dataset + target + control hints                        | task type, selected models, rules, advisory |
+| `GET /api/status/{job_id}`       | get job status                      | path only                                               | job state, history, results, config         |
+| `GET /api/jobs`                  | list jobs                           | no body                                                 | recent jobs list                            |
+| `GET /api/leaderboard`           | global leaderboard                  | no body                                                 | leaderboard rows                            |
+| `WS /api/ws/status/{job_id}`     | live status stream                  | websocket                                               | incremental job updates                     |
+| `POST /api/ensemble`             | build prefit ensemble               | `{job_ids, strategy, is_classification?}` style payload | ensemble summary + metrics                  |
 
 ### Predict and scenario routes
 
-| Endpoint | Purpose | Request shape | Response shape |
-| --- | --- | --- | --- |
-| `GET /api/scenario/context/{job_id}` | load feature ranges and context | path only | baseline payload, feature ranges, metadata |
-| `POST /api/predict/{job_id}` | single prediction | `{features}` | prediction, confidence, probabilities, sensitivity |
-| `POST /api/counterfactual-lite/{job_id}` | quick recourse | `{features, target_prediction?}` | small counterfactual search result |
-| `POST /api/counterfactual/{job_id}` | full recourse | same family as above | richer counterfactual report |
-| `POST /api/scenarios/{job_id}` | multi-scenario simulation | payload + scenario adjustments + policy | scenario outputs, deltas, guardrails |
-| `GET /api/scenario-packs/{job_id}` | list saved packs | path only | saved packs |
-| `POST /api/scenario-packs/{job_id}` | save scenario pack | named pack payload | persisted pack summary |
-| `POST /api/future` | sweep a feature into future values | `{job_id, payload, feature, values}` style payload | prediction series |
-| `POST /api/contract-check/{job_id}` | validate incoming file against schema | multipart file | contract violations and summary |
-| `POST /api/batch-predict/{job_id}` | score a file | multipart file | batch scoring output and artifact refs |
+| Endpoint                                 | Purpose                               | Request shape                                      | Response shape                                     |
+| ---------------------------------------- | ------------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
+| `GET /api/scenario/context/{job_id}`     | load feature ranges and context       | path only                                          | baseline payload, feature ranges, metadata         |
+| `POST /api/predict/{job_id}`             | single prediction                     | `{features}`                                       | prediction, confidence, probabilities, sensitivity |
+| `POST /api/counterfactual-lite/{job_id}` | quick recourse                        | `{features, target_prediction?}`                   | small counterfactual search result                 |
+| `POST /api/counterfactual/{job_id}`      | full recourse                         | same family as above                               | richer counterfactual report                       |
+| `POST /api/scenarios/{job_id}`           | multi-scenario simulation             | payload + scenario adjustments + policy            | scenario outputs, deltas, guardrails               |
+| `GET /api/scenario-packs/{job_id}`       | list saved packs                      | path only                                          | saved packs                                        |
+| `POST /api/scenario-packs/{job_id}`      | save scenario pack                    | named pack payload                                 | persisted pack summary                             |
+| `POST /api/future`                       | sweep a feature into future values    | `{job_id, payload, feature, values}` style payload | prediction series                                  |
+| `POST /api/contract-check/{job_id}`      | validate incoming file against schema | multipart file                                     | contract violations and summary                    |
+| `POST /api/batch-predict/{job_id}`       | score a file                          | multipart file                                     | batch scoring output and artifact refs             |
 
 Prediction route logic notes:
 
@@ -545,61 +545,61 @@ Prediction route logic notes:
 
 ### Drift routes
 
-| Endpoint | Purpose | Request shape | Response shape |
-| --- | --- | --- | --- |
-| `POST /api/drift/{job_id}` | run drift check against baseline | multipart CSV file | drift dashboard report |
-| `GET /api/drift/{job_id}/history` | prior drift checks | path only | chronological check summaries |
-| `GET /api/drift/{job_id}/feature-timeline` | feature drift trend | optional `feature` query | timeline of PSI/KS and severity |
-| `GET /api/drift/{job_id}/schedule` | read schedule | path only | current policy and due status |
-| `POST /api/drift/{job_id}/schedule` | save schedule | form fields for enabled, thresholds, cadence | updated schedule |
-| `POST /api/drift/{job_id}/retrain` | launch retrain from drift input | multipart file + optional overrides | new job reference |
+| Endpoint                                   | Purpose                          | Request shape                                | Response shape                  |
+| ------------------------------------------ | -------------------------------- | -------------------------------------------- | ------------------------------- |
+| `POST /api/drift/{job_id}`                 | run drift check against baseline | multipart CSV file                           | drift dashboard report          |
+| `GET /api/drift/{job_id}/history`          | prior drift checks               | path only                                    | chronological check summaries   |
+| `GET /api/drift/{job_id}/feature-timeline` | feature drift trend              | optional `feature` query                     | timeline of PSI/KS and severity |
+| `GET /api/drift/{job_id}/schedule`         | read schedule                    | path only                                    | current policy and due status   |
+| `POST /api/drift/{job_id}/schedule`        | save schedule                    | form fields for enabled, thresholds, cadence | updated schedule                |
+| `POST /api/drift/{job_id}/retrain`         | launch retrain from drift input  | multipart file + optional overrides          | new job reference               |
 
 ### Experiments/workspace routes
 
-| Endpoint | Purpose | Request shape | Response shape |
-| --- | --- | --- | --- |
-| `GET /api/experiments` | list runs | query: `limit`, `task_type` | experiment rows |
-| `GET /api/experiments/compare` | compare many runs | query: `ids=...` | `comparison`, `count`, `unresolved` |
-| `GET /api/experiments/diff` | diff two runs | query: `run_a`, `run_b` | diff payload |
-| `GET /api/experiments/{run_id}` | one run | path only | full run details |
-| `GET /api/notes/{entity_type}/{entity_id}` | fetch notes | path only | notes list |
-| `POST /api/notes/{entity_type}/{entity_id}` | add note | `{note}` | `{ok: true}` |
-| `GET /api/workspaces` | list workspaces | no body | workspaces |
-| `POST /api/workspaces` | create workspace | `{name, dataset_id?, last_job_id?}` | workspace row |
-| `GET /api/workspaces/resume` | resume last completed run | optional `workspace_id` query | last job and dataset context |
-| `GET /api/notifications` | notification feed | no body | notifications list |
+| Endpoint                                    | Purpose                   | Request shape                       | Response shape                      |
+| ------------------------------------------- | ------------------------- | ----------------------------------- | ----------------------------------- |
+| `GET /api/experiments`                      | list runs                 | query: `limit`, `task_type`         | experiment rows                     |
+| `GET /api/experiments/compare`              | compare many runs         | query: `ids=...`                    | `comparison`, `count`, `unresolved` |
+| `GET /api/experiments/diff`                 | diff two runs             | query: `run_a`, `run_b`             | diff payload                        |
+| `GET /api/experiments/{run_id}`             | one run                   | path only                           | full run details                    |
+| `GET /api/notes/{entity_type}/{entity_id}`  | fetch notes               | path only                           | notes list                          |
+| `POST /api/notes/{entity_type}/{entity_id}` | add note                  | `{note}`                            | `{ok: true}`                        |
+| `GET /api/workspaces`                       | list workspaces           | no body                             | workspaces                          |
+| `POST /api/workspaces`                      | create workspace          | `{name, dataset_id?, last_job_id?}` | workspace row                       |
+| `GET /api/workspaces/resume`                | resume last completed run | optional `workspace_id` query       | last job and dataset context        |
+| `GET /api/notifications`                    | notification feed         | no body                             | notifications list                  |
 
 ### Explainability and report routes
 
-| Endpoint | Purpose | Request shape | Response shape |
-| --- | --- | --- | --- |
-| `GET /api/shap/{job_id}` | global SHAP | path only | SHAP summary or pending state |
-| `GET /api/permutation/{job_id}` | permutation importance | path only | feature importance rows |
-| `POST /api/explain/{job_id}` | local explanation | `{features}` | local contribution payload |
-| `GET /api/pipeline/{job_id}` | pipeline graph | path only | `{mermaid}` |
-| `GET /api/lineage/{job_id}` | feature lineage | path only | lineage report |
-| `GET /api/calibration/{job_id}` | calibration curve | path only | calibration payload |
-| `GET /api/thresholds/{job_id}` | threshold tuning | path only | threshold report |
-| `POST /api/counterfactual/{job_id}` | explainability counterfactual | `{features|payload, target_prediction?}` | counterfactual response |
-| `GET /api/trust/{job_id}` | trust heatmap | path only | trust visualization payload |
-| `GET /api/report/{job_id}/pdf` | PDF report | path only | file response |
-| `GET /api/report/{job_id}/model-card` | model card HTML | path only | file response |
+| Endpoint                              | Purpose                       | Request shape | Response shape                |
+| ------------------------------------- | ----------------------------- | ------------- | ----------------------------- | ----------------------- |
+| `GET /api/shap/{job_id}`              | global SHAP                   | path only     | SHAP summary or pending state |
+| `GET /api/permutation/{job_id}`       | permutation importance        | path only     | feature importance rows       |
+| `POST /api/explain/{job_id}`          | local explanation             | `{features}`  | local contribution payload    |
+| `GET /api/pipeline/{job_id}`          | pipeline graph                | path only     | `{mermaid}`                   |
+| `GET /api/lineage/{job_id}`           | feature lineage               | path only     | lineage report                |
+| `GET /api/calibration/{job_id}`       | calibration curve             | path only     | calibration payload           |
+| `GET /api/thresholds/{job_id}`        | threshold tuning              | path only     | threshold report              |
+| `POST /api/counterfactual/{job_id}`   | explainability counterfactual | `{features    | payload, target_prediction?}` | counterfactual response |
+| `GET /api/trust/{job_id}`             | trust heatmap                 | path only     | trust visualization payload   |
+| `GET /api/report/{job_id}/pdf`        | PDF report                    | path only     | file response                 |
+| `GET /api/report/{job_id}/model-card` | model card HTML               | path only     | file response                 |
 
 ### Misc routes
 
-| Endpoint | Purpose | Request shape | Response shape |
-| --- | --- | --- | --- |
-| `POST /api/chat` | contextual chat on a run | `{job_id, prompt}` | `{response}` |
-| `POST /api/nl/intent` | NL-to-ML intent parse | `{prompt, dataset_id?}` | parsed intent payload |
-| `GET /api/recommend/{job_id}` | recommendations | path only | recommendations list |
-| `GET /api/export/{job_id}` | export trained bundle | path only | zip file response |
-| `POST /api/synthetic/{dataset_id}` | generate synthetic rows | query/body-driven row count | new dataset + preview |
-| `GET /api/synthetic/judge/{dataset_id}` | synthetic quality review | path only | quality evaluation |
-| `POST /api/quicktrain` | fast playground run | quicktrain payload | lightweight train response |
-| `GET /api/zeroshot/{dataset_id}` | zero-shot hints | path only | zero-shot guidance |
-| `GET /api/meta/insights/{dataset_id}` | cross-dataset insights | path only | meta-learning recommendations |
-| `GET /api/meta/status` | meta-learning health | no body | status payload |
-| `GET /api/narrate/{job_id}` | narrative summary | path only | narration payload |
+| Endpoint                                | Purpose                  | Request shape               | Response shape                |
+| --------------------------------------- | ------------------------ | --------------------------- | ----------------------------- |
+| `POST /api/chat`                        | contextual chat on a run | `{job_id, prompt}`          | `{response}`                  |
+| `POST /api/nl/intent`                   | NL-to-ML intent parse    | `{prompt, dataset_id?}`     | parsed intent payload         |
+| `GET /api/recommend/{job_id}`           | recommendations          | path only                   | recommendations list          |
+| `GET /api/export/{job_id}`              | export trained bundle    | path only                   | zip file response             |
+| `POST /api/synthetic/{dataset_id}`      | generate synthetic rows  | query/body-driven row count | new dataset + preview         |
+| `GET /api/synthetic/judge/{dataset_id}` | synthetic quality review | path only                   | quality evaluation            |
+| `POST /api/quicktrain`                  | fast playground run      | quicktrain payload          | lightweight train response    |
+| `GET /api/zeroshot/{dataset_id}`        | zero-shot hints          | path only                   | zero-shot guidance            |
+| `GET /api/meta/insights/{dataset_id}`   | cross-dataset insights   | path only                   | meta-learning recommendations |
+| `GET /api/meta/status`                  | meta-learning health     | no body                     | status payload                |
+| `GET /api/narrate/{job_id}`             | narrative summary        | path only                   | narration payload             |
 
 ## Training Artifact Logic
 

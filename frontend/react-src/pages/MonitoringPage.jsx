@@ -1,13 +1,5 @@
 import React from "react";
-import {
-  DataTable,
-  Message,
-  MiniAreaChart,
-  PageHero,
-  Panel,
-  StatCard,
-  Spinner,
-} from "../components/ui.jsx";
+import { DataTable, Message, MiniAreaChart, PageHero, Panel, StatCard, Spinner } from "../components/ui.jsx";
 import { formatDate, formatNumber } from "../lib/format.js";
 
 export function MonitoringPage({
@@ -87,7 +79,6 @@ export function MonitoringPage({
       </div>
 
       <div className="grid grid--two">
-     
         <Panel
           title="Fresh drift check"
           subtitle="Upload the latest production slice and compare it to the run baseline."
