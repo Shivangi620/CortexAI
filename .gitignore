@@ -1,38 +1,26 @@
-venv/
-.venv/
-node_modules/
-__pycache__/
-*.pyc
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.eslintcache
-.coverage
-.DS_Store
-.idea/
-.vscode/
-*.code-workspace
-*.swp
-*.swo
-
-# Runtime/state artifacts
-automl_studio.db
-backend/automl_studio.db
-dump.rdb
-tmp/
-backend/tmp/
 .env
+.env.*
+!.env.example
 
-# Model/export artifacts
-*.pkl
-*.zip
+.DS_Store
+Thumbs.db
 
-# Run artifacts
-runs/
+node_modules/
+venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+.next/
+dist/
+build/
+
+*.db
+*.sqlite
+*.sqlite3
+dump.rdb
+
+tmp/
 backend/runs/
-frontend/static/
-tests/data/generated/
 
-# Data files
-*.csv
-!dummy_data.csv
+.codex

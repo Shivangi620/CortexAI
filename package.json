@@ -32,13 +32,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Bloated11/auto_ml.git"
+    "url": "git+https://github.com/ambulj/inferyx.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/Bloated11/auto_ml/issues"
+    "url": "https://github.com/ambulj/inferyx/issues"
   },
-  "homepage": "https://github.com/Bloated11/auto_ml#readme"
+  "homepage": "https://github.com/ambulj/inferyx#readme"
 }
