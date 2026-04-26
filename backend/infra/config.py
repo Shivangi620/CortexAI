@@ -61,6 +61,9 @@ class Settings:
             self.max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "500"))
         except Exception:
             self.max_upload_mb = 500
+        self.allow_pickle_uploads: bool = str(
+            os.getenv("ALLOW_PICKLE_UPLOADS", "false")
+        ).lower() == "true"
 
         # Redis / Celery
         self.redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")

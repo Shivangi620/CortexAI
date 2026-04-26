@@ -883,14 +883,11 @@ def create_export_bundle(job_id: str, results: dict) -> str:
 
     run_dir = get_run_dir(job_id)
     metrics_path = os.path.join(run_dir, "logs", "metrics.json")
-    schema_path = os.path.join(run_dir, "data", "schema.json")
     metadata_path = os.path.join(run_dir, "artifacts", "model_metadata.json")
     model_path = resolve_model_path(job_id)
 
     model_metadata = _safe_json_load(metadata_path)
     saved_metrics = _safe_json_load(metrics_path)
-    schema_data = _safe_json_load(schema_path)
-
     merged_results = dict(saved_metrics) if isinstance(saved_metrics, dict) else {}
     merged_results.update(results or {})
 

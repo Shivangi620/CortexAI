@@ -82,20 +82,26 @@ The React studio is organized into these main surfaces:
 
 The app currently advertises broad upload support through the frontend and shared loader path, including:
 
-- `.csv`, `.tsv`
-- `.xlsx`, `.xls`
-- `.json`
-- `.parquet`, `.feather`
-- `.pdf`
-- `.txt`
-- `.html`, `.htm`
-- `.xml`
-- `.zip`
-- `.sav` (SPSS)
-- `.sas7bdat`
-- `.dta`
+- Delimited and flat files: `.csv`, `.tsv`, `.txt`, `.dat`, `.tab`, `.log`
+- Spreadsheet files: `.xlsx`, `.xls`, `.xlsm`, `.ods`
+- JSON family: `.json`, `.jsonl`, `.ndjson`
+- Columnar/binary analytics formats: `.parquet`, `.feather`, `.arrow`, `.orc`
+- Statistical packages: `.sav` (SPSS), `.sas7bdat`, `.xpt`, `.dta`
+- Markup and database sources: `.xml`, `.html`, `.htm`, `.db`, `.sqlite`, `.sqlite3`
+- Document-style inputs: `.pdf`, `.md`, `.markdown`, `.rtf`, `.docx`, `.eml`, `.msg`
+- Image inputs: `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tif`, `.tiff`, `.gif`
+- `.zip` archives containing a supported dataset file, including normal uploads and export bundles
 
-Connector-based import is also available from the studio for SQL-style sources.
+Ingestion notes:
+
+- PDF uploads support text-page mode and table extraction mode.
+- Excel and SQLite imports can target a specific sheet or table.
+- The studio can inspect uploads and remote assets first, then surface detected ZIP members, workbook sheets, and SQLite tables before ingest.
+- Text-heavy formats can be chunked during ingest for downstream NLP-style workflows.
+- Image ingestion captures OCR text, OCR confidence when available, and lightweight embedding-style image features.
+- Pickle uploads are intentionally disabled by default for safety. Enable them only with `ALLOW_PICKLE_UPLOADS=true` if you explicitly trust the source.
+
+Connector-based import is also available from the studio for SQL-style sources plus remote CSV/URL, Google Drive, Dropbox, OneDrive, SharePoint, REST API, S3, GCS, and Azure Blob ingestion paths.
 
 ## Quality Gate
 

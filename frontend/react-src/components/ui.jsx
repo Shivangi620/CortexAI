@@ -94,41 +94,82 @@ export function HealthCard({ score, grade, summary, issues = [], bonuses = [] })
   );
 }
 
-export function Badge({ children, tone = "default" }) {
-  return <span className={`badge badge--${tone}`}>{children}</span>;
+export function Badge({ children, tone = "default", compact = false }) {
+  return <span className={`badge badge--${tone} ${compact ? "badge--compact" : ""}`.trim()}>{children}</span>;
 }
 
-export function EmptyState({ text }) {
-  return <div className="empty-state">{text}</div>;
+export function EmptyState({ text, title = "Nothing to show yet", action = null }) {
+  return (
+    <div className="empty-state">
+      <strong>{title}</strong>
+      <p>{text}</p>
+      {action ? <div className="empty-state__action">{action}</div> : null}
+    </div>
+  );
 }
 
-export function Message({ text, tone = "info" }) {
+export function InsightSummary({ title = "Update summary", items = [], tone = "default" }) {
+  const rows = items.filter(Boolean);
+  if (!rows.length) return null;
+  return (
+    <div className={`insight-summary insight-summary--${tone}`} role="status" aria-live="polite">
+      <strong>{title}</strong>
+      <ul>
+        {rows.map((item, index) => (
+          <li key={`${title}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function Message({ text, tone = "info", onDismiss = null, dismissLabel = "Dismiss message" }) {
   if (!text) return null;
-  return <div className={`message message--${tone}`}>{text}</div>;
+  const isUrgent = tone === "danger" || tone === "warning";
+  return (
+    <div className={`message message--${tone}`} role={isUrgent ? "alert" : "status"} aria-live={isUrgent ? "assertive" : "polite"}>
+      <span>{text}</span>
+      {typeof onDismiss === "function" ? (
+        <button type="button" className="message__dismiss" onClick={onDismiss} aria-label={dismissLabel}>
+          Dismiss
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 export function DataTable({ columns, rows, empty = "No data available.", compact = false }) {
   if (!rows?.length) return <EmptyState text={empty} />;
   return (
-    <div className={`table-shell ${compact ? "table-shell--compact" : ""}`}>
-      <table>
-        <thead>
-          <tr>
-            {columns.map((column) => (
-              <th key={column.key}>{column.label}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={row.id || rowIndex}>
+    <div className="table-stack">
+      <div
+        className={`table-shell ${compact ? "table-shell--compact" : ""}`}
+        tabIndex={0}
+        role="region"
+        aria-label="Scrollable data table"
+      >
+        <table>
+          <thead>
+            <tr>
               {columns.map((column) => (
-                <td key={column.key}>{column.render ? column.render(row) : renderDisplayValue(row[column.key])}</td>
+                <th key={column.key}>{column.label}</th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((row, rowIndex) => (
+              <tr key={row.id || rowIndex}>
+                {columns.map((column) => (
+                  <td key={column.key}>{column.render ? column.render(row) : renderDisplayValue(row[column.key])}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="table-shell__hint" aria-hidden="true">
+        Scroll sideways to view all columns.
+      </div>
     </div>
   );
 }
@@ -215,6 +256,19 @@ export function MiniAreaChart({ points, valueKey = "value", labelKey = "label", 
   const max = Math.max(...values);
   const min = Math.min(...values);
   const spread = max - min || 1;
+  const startLabel = points[0]?.[labelKey] || "Start";
+  const endLabel = points[points.length - 1]?.[labelKey] || "Now";
+  const startValue = Number(points[0]?.[valueKey]);
+  const endValue = Number(points[points.length - 1]?.[valueKey]);
+  const trend =
+    Number.isFinite(startValue) && Number.isFinite(endValue)
+      ? endValue > startValue
+        ? "rises"
+        : endValue < startValue
+          ? "falls"
+          : "holds steady"
+      : "changes";
+  const ariaLabel = `Trend chart from ${startLabel} to ${endLabel}. Values range from ${min.toFixed(2)} to ${max.toFixed(2)} and the series ${trend}.`;
   const coords = points
     .map((point, index) => {
       const raw = Number(point?.[valueKey]);
@@ -228,14 +282,73 @@ export function MiniAreaChart({ points, valueKey = "value", labelKey = "label", 
 
   return (
     <div className="chart-card">
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="area-chart">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="area-chart" role="img" aria-label={ariaLabel}>
         <polygon points={area} className="area-chart__fill" />
         <polyline points={coords} className="area-chart__line" />
       </svg>
       <div className="chart-card__labels">
-        <span>{points[0]?.[labelKey] || "Start"}</span>
-        <span>{points[points.length - 1]?.[labelKey] || "Now"}</span>
+        <span>{startLabel}</span>
+        <span>{endLabel}</span>
       </div>
+    </div>
+  );
+}
+
+export function BeforeAfterChart({ items = [], empty = "Comparison metrics will appear here." }) {
+  const rows = items
+    .map((item) => {
+      const before = Number(item?.before);
+      const after = Number(item?.after);
+      const max = Math.max(
+        Number.isFinite(before) ? before : 0,
+        Number.isFinite(after) ? after : 0,
+        Number(item?.max) || 0,
+        1,
+      );
+      return {
+        label: item?.label || "Metric",
+        before: Number.isFinite(before) ? before : null,
+        after: Number.isFinite(after) ? after : null,
+        beforeLabel: item?.beforeLabel,
+        afterLabel: item?.afterLabel,
+        detail: item?.detail,
+        max,
+      };
+    })
+    .filter((item) => item.before !== null || item.after !== null);
+
+  if (!rows.length) return <EmptyState text={empty} />;
+
+  return (
+    <div className="before-after-chart">
+      {rows.map((item) => {
+        const beforeWidth = item.before === null ? "0%" : `${(item.before / item.max) * 100}%`;
+        const afterWidth = item.after === null ? "0%" : `${(item.after / item.max) * 100}%`;
+        return (
+          <article key={item.label} className="before-after-chart__row">
+            <div className="before-after-chart__meta">
+              <strong>{item.label}</strong>
+              {item.detail ? <span>{item.detail}</span> : null}
+            </div>
+            <div className="before-after-chart__tracks">
+              <div className="before-after-chart__lane">
+                <span>Before</span>
+                <div className="before-after-chart__track">
+                  <div className="before-after-chart__fill before-after-chart__fill--before" style={{ width: beforeWidth }} />
+                </div>
+                <strong>{item.beforeLabel ?? renderDisplayValue(item.before)}</strong>
+              </div>
+              <div className="before-after-chart__lane">
+                <span>After</span>
+                <div className="before-after-chart__track">
+                  <div className="before-after-chart__fill before-after-chart__fill--after" style={{ width: afterWidth }} />
+                </div>
+                <strong>{item.afterLabel ?? renderDisplayValue(item.after)}</strong>
+              </div>
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -345,16 +458,18 @@ export function KeyValueList({ items }) {
 }
 
 export function SegmentedControl({ options, value, onChange, label }) {
+  const labelId = React.useId();
   return (
     <div className="field">
-      {label && <span>{label}</span>}
-      <div className="segmented-control">
+      {label && <span id={labelId}>{label}</span>}
+      <div className="segmented-control" role="group" aria-labelledby={label ? labelId : undefined}>
         {options.map((opt) => (
           <button
             key={opt}
             type="button"
             className={`button ${value === opt ? "button--secondary" : "button--ghost"}`}
             onClick={() => onChange(opt)}
+            aria-pressed={value === opt}
             style={{ borderRadius: "12px", minHeight: "38px" }}
           >
             {opt}
@@ -366,10 +481,23 @@ export function SegmentedControl({ options, value, onChange, label }) {
 }
 
 export function Checkbox({ label, checked, onChange, help }) {
+  const helpId = React.useId();
   return (
-    <label className="checkbox" title={help}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      <span>{label}</span>
+    <label className="checkbox">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        aria-describedby={help ? helpId : undefined}
+      />
+      <span className="checkbox__copy">
+        <span>{label}</span>
+        {help ? (
+          <span id={helpId} className="checkbox__helper">
+            {help}
+          </span>
+        ) : null}
+      </span>
     </label>
   );
 }

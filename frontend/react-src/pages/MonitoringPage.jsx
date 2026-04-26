@@ -1,6 +1,28 @@
-import React from "react";
-import { DataTable, Message, MiniAreaChart, PageHero, Panel, StatCard, Spinner } from "../components/ui.jsx";
-import { formatDate, formatNumber } from "../lib/format.js";
+import React, { useMemo, useState } from "react";
+import { Badge, DataTable, EmptyState, Message, MiniAreaChart, PageHero, Panel, StatCard } from "../components/ui.jsx";
+import { formatDate, formatNumber, safeParseJson } from "../lib/format.js";
+
+function buildFeatureTemplate(datasetProfile) {
+  const target = datasetProfile?.suggested_target;
+  const template = {};
+  datasetProfile?.columns?.forEach((column) => {
+    if (column !== target) template[column] = 0;
+  });
+  return template;
+}
+
+function readJsonDraft(value) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return { valid: true, text: "", parsed: {} };
+    try {
+      return { valid: true, text: value, parsed: JSON.parse(value) };
+    } catch {
+      return { valid: false, text: value, parsed: null };
+    }
+  }
+  return { valid: true, text: JSON.stringify(value || {}, null, 2), parsed: value || {} };
+}
 
 export function MonitoringPage({
   driftUploadRef,
@@ -17,19 +39,39 @@ export function MonitoringPage({
   driftSchedule,
   forms,
   patchForm,
-  loading,
   predictResult,
   futureResult,
   handlePredict,
   handleFutureSweep,
-  getGoalSeeker,
-  goalSeeker,
   datasetProfile,
 }) {
   const historyRows = driftHistory?.history || [];
   const timelineRows = driftTimeline?.timeline || [];
+  const [historyFilter, setHistoryFilter] = useState("");
+  const [timelineFilter, setTimelineFilter] = useState("");
+  const [formatStatus, setFormatStatus] = useState({ predict: "", future: "" });
   const alertSummary = driftResult?.alert_summary || driftSchedule?.last_alert_summary || null;
   const retrainPlan = driftResult?.retrain_recommendation || null;
+  const predictDraft = useMemo(() => readJsonDraft(forms.predictPayload), [forms.predictPayload]);
+  const futureDraft = useMemo(() => readJsonDraft(forms.baseFeatures), [forms.baseFeatures]);
+  const filteredHistoryRows = useMemo(() => {
+    const query = historyFilter.trim().toLowerCase();
+    if (!query) return historyRows;
+    return historyRows.filter((row) =>
+      [row.uploaded_name, row.status, row.created_at]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query)),
+    );
+  }, [historyFilter, historyRows]);
+  const filteredTimelineRows = useMemo(() => {
+    const query = timelineFilter.trim().toLowerCase();
+    if (!query) return timelineRows;
+    return timelineRows.filter((row) =>
+      [row.feature, row.severity, row.created_at]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query)),
+    );
+  }, [timelineFilter, timelineRows]);
   const timelinePoints = timelineRows.slice(0, 16).map((item, index) => ({
     label: item.feature || item.uploaded_name || `Check ${index + 1}`,
     value: Number(item.psi) || 0,
@@ -87,6 +129,7 @@ export function MonitoringPage({
             <label className="field">
               <span>Production sample</span>
               <input ref={driftUploadRef} type="file" />
+              <p className="field__helper">Upload a fresh production slice to compare against the current baseline.</p>
             </label>
             <button className="button button--primary" type="submit">
               Run Drift Detection
@@ -153,7 +196,7 @@ export function MonitoringPage({
           )}
         </Panel>
 
-        <Panel title="Alert policy" subtitle="Tune monitoring cadence and thresholds without leaving the page.">
+        <Panel title="Alert policy controls" subtitle="Adjust monitoring cadence and alert thresholds without leaving the page.">
           <form className="stack" onSubmit={driftScheduleSave}>
             <label className="checkbox">
               <input
@@ -161,7 +204,10 @@ export function MonitoringPage({
                 checked={forms.driftEnabled}
                 onChange={(event) => patchForm("driftEnabled", event.target.checked)}
               />
-              <span>Enable scheduled monitoring</span>
+              <span className="checkbox__copy">
+                <span>Enable scheduled monitoring</span>
+                <span className="checkbox__helper">Keep drift checks on a recurring cadence even when no manual upload is triggered.</span>
+              </span>
             </label>
             <div className="split">
               <label className="field">
@@ -172,6 +218,7 @@ export function MonitoringPage({
                   value={forms.driftFrequencyDays}
                   onChange={(event) => patchForm("driftFrequencyDays", event.target.value)}
                 />
+                <p className="field__helper">How often Ops Watch should expect a fresh drift comparison.</p>
               </label>
               <label className="field">
                 <span>Feature filter</span>
@@ -180,6 +227,7 @@ export function MonitoringPage({
                   onChange={(event) => patchForm("driftFeature", event.target.value)}
                   placeholder="optional feature name"
                 />
+                <p className="field__helper">Optionally focus scheduled checks on one high-risk feature.</p>
               </label>
             </div>
             <div className="split">
@@ -236,6 +284,7 @@ export function MonitoringPage({
             <label className="field">
               <span>Retraining dataset</span>
               <input ref={retrainUploadRef} type="file" />
+              <p className="field__helper">Choose the replacement sample that should seed the retraining launch.</p>
             </label>
             {retrainPlan && (
               <div className="message message--accent tiny">
@@ -293,57 +342,121 @@ export function MonitoringPage({
       <div className="grid grid--two">
         <Panel
           title="Recent drift checks"
-          subtitle="Operational history now has a proper table instead of only raw JSON."
+          subtitle="Review recent drift checks in a searchable operations log."
         >
-          <DataTable
-            columns={[
-              { key: "uploaded_name", label: "Dataset" },
-              { key: "status", label: "Status" },
-              { key: "drift_score_pct", label: "Drift score", render: (row) => formatNumber(row.drift_score_pct) },
-              { key: "created_at", label: "Created", render: (row) => formatDate(row.created_at) },
-            ]}
-            rows={historyRows}
-            empty="No drift checks have been recorded yet."
-          />
+          <label className="field">
+            <span>Filter checks</span>
+            <input
+              value={historyFilter}
+              onChange={(event) => setHistoryFilter(event.target.value)}
+              placeholder="Search by dataset, status, or date"
+            />
+            <Badge compact tone="default">
+              Showing {filteredHistoryRows.length} of {historyRows.length} checks
+            </Badge>
+          </label>
+          {filteredHistoryRows.length ? (
+            <DataTable
+              columns={[
+                { key: "uploaded_name", label: "Dataset" },
+                { key: "status", label: "Status" },
+                { key: "drift_score_pct", label: "Drift score", render: (row) => formatNumber(row.drift_score_pct) },
+                { key: "created_at", label: "Created", render: (row) => formatDate(row.created_at) },
+              ]}
+              rows={filteredHistoryRows}
+              empty="No drift checks have been recorded yet."
+            />
+          ) : historyRows.length && historyFilter ? (
+            <EmptyState
+              title="No checks match this filter"
+              text="Try a broader dataset, status, or date term to bring the operations log back into view."
+              action={
+                <button className="button button--ghost" type="button" onClick={() => setHistoryFilter("")}>
+                  Clear Filter
+                </button>
+              }
+            />
+          ) : (
+            <EmptyState text="No drift checks have been recorded yet." />
+          )}
         </Panel>
 
         <Panel
           title="Feature event table"
-          subtitle="The feature-level timeline remains inspectable when you need the detail behind the chart."
+          subtitle="Inspect the feature-level timeline behind the drift curve."
         >
-          <DataTable
-            columns={[
-              { key: "feature", label: "Feature" },
-              { key: "psi", label: "PSI", render: (row) => formatNumber(row.psi) },
-              { key: "severity", label: "Severity" },
-              { key: "drift_detected", label: "Detected", render: (row) => (row.drift_detected ? "Yes" : "No") },
-              { key: "created_at", label: "Observed", render: (row) => formatDate(row.created_at) },
-            ]}
-            rows={timelineRows}
-            empty="No feature-level drift events are available yet."
-            compact
-          />
+          <label className="field">
+            <span>Filter events</span>
+            <input
+              value={timelineFilter}
+              onChange={(event) => setTimelineFilter(event.target.value)}
+              placeholder="Search by feature, severity, or date"
+            />
+            <Badge compact tone="default">
+              Showing {filteredTimelineRows.length} of {timelineRows.length} events
+            </Badge>
+          </label>
+          {filteredTimelineRows.length ? (
+            <DataTable
+              columns={[
+                { key: "feature", label: "Feature" },
+                { key: "psi", label: "PSI", render: (row) => formatNumber(row.psi) },
+                { key: "severity", label: "Severity" },
+                { key: "drift_detected", label: "Detected", render: (row) => (row.drift_detected ? "Yes" : "No") },
+                { key: "created_at", label: "Observed", render: (row) => formatDate(row.created_at) },
+              ]}
+              rows={filteredTimelineRows}
+              empty="No feature-level drift events are available yet."
+              compact
+            />
+          ) : timelineRows.length && timelineFilter ? (
+            <EmptyState
+              title="No events match this filter"
+              text="Clear or loosen the feature and severity search to inspect the timeline behind the drift curve."
+              action={
+                <button className="button button--ghost" type="button" onClick={() => setTimelineFilter("")}>
+                  Clear Filter
+                </button>
+              }
+            />
+          ) : (
+            <EmptyState text="No feature-level drift events are available yet." />
+          )}
         </Panel>
       </div>
 
       <div className="grid grid--two">
         <Panel title="Single Prediction" subtitle="Send a feature object through the selected trained model.">
           <div className="stack">
-            <div className="split">
+            <div className="section-divider">
+              <span className="section-divider__title">Payload Setup</span>
+              <p className="section-divider__detail">Prepare a single input object before sending it through the selected run.</p>
+            </div>
+            <div className="field__header">
               <span className="tiny-eyebrow">Input JSON</span>
-              <button
-                className="button button--ghost tiny"
-                onClick={() => {
-                  const target = datasetProfile?.suggested_target;
-                  const template = {};
-                  datasetProfile?.columns?.forEach((c) => {
-                    if (c !== target) template[c] = 0;
-                  });
-                  patchForm("predictPayload", template);
-                }}
-              >
-                🪄 Load Template
-              </button>
+              <div className="field__actions">
+                <button
+                  className="button button--ghost tiny"
+                  type="button"
+                  onClick={() => {
+                    patchForm("predictPayload", buildFeatureTemplate(datasetProfile));
+                  }}
+                >
+                  Load Template
+                </button>
+                <button
+                  className="button button--ghost tiny"
+                  type="button"
+                  onClick={() => {
+                    if (!predictDraft.valid) return;
+                    patchForm("predictPayload", JSON.stringify(safeParseJson(predictDraft.text, {}), null, 2));
+                    setFormatStatus((current) => ({ ...current, predict: "Input JSON formatted for prediction." }));
+                  }}
+                  disabled={!predictDraft.valid}
+                >
+                  Format JSON
+                </button>
+              </div>
             </div>
             <textarea
               className="code-editor"
@@ -353,8 +466,21 @@ export function MonitoringPage({
                   ? forms.predictPayload
                   : JSON.stringify(forms.predictPayload, null, 2)
               }
-              onChange={(e) => patchForm("predictPayload", e.target.value)}
+              onChange={(e) => {
+                setFormatStatus((current) => ({ ...current, predict: "" }));
+                patchForm("predictPayload", e.target.value);
+              }}
             />
+            <p className="field__helper">Use a single feature object that matches the trained model schema.</p>
+            {!predictDraft.valid ? <Message text="Input JSON is invalid. Fix formatting before running prediction." tone="warning" /> : null}
+            {formatStatus.predict ? (
+              <Message
+                text={formatStatus.predict}
+                tone="success"
+                onDismiss={() => setFormatStatus((current) => ({ ...current, predict: "" }))}
+                dismissLabel="Dismiss prediction format notice"
+              />
+            ) : null}
             <button className="button" onClick={handlePredict}>
               Run Prediction
             </button>
@@ -378,6 +504,10 @@ export function MonitoringPage({
           subtitle="Sweep one feature across candidate values to explore directional behavior."
         >
           <div className="stack">
+            <div className="section-divider">
+              <span className="section-divider__title">Sweep Setup</span>
+              <p className="section-divider__detail">Lock a realistic baseline, then vary one feature across a candidate range.</p>
+            </div>
             <label className="field">
               <span>Feature to Sweep</span>
               <select value={forms.sweepFeature || ""} onChange={(e) => patchForm("sweepFeature", e.target.value)}>
@@ -388,8 +518,34 @@ export function MonitoringPage({
                   </option>
                 ))}
               </select>
+              <p className="field__helper">Pick the one feature you want to vary while the base payload stays fixed.</p>
             </label>
-            <span className="tiny-eyebrow">Base Feature JSON</span>
+            <div className="field__header">
+              <span className="tiny-eyebrow">Base Feature JSON</span>
+              <div className="field__actions">
+                <button
+                  className="button button--ghost tiny"
+                  type="button"
+                  onClick={() => {
+                    patchForm("baseFeatures", buildFeatureTemplate(datasetProfile));
+                  }}
+                >
+                  Load Template
+                </button>
+                <button
+                  className="button button--ghost tiny"
+                  type="button"
+                  onClick={() => {
+                    if (!futureDraft.valid) return;
+                    patchForm("baseFeatures", JSON.stringify(safeParseJson(futureDraft.text, {}), null, 2));
+                    setFormatStatus((current) => ({ ...current, future: "Base feature JSON formatted for the sweep." }));
+                  }}
+                  disabled={!futureDraft.valid}
+                >
+                  Format JSON
+                </button>
+              </div>
+            </div>
             <textarea
               className="code-editor"
               rows={4}
@@ -398,8 +554,21 @@ export function MonitoringPage({
                   ? forms.baseFeatures
                   : JSON.stringify(forms.baseFeatures, null, 2)
               }
-              onChange={(e) => patchForm("baseFeatures", e.target.value)}
+              onChange={(e) => {
+                setFormatStatus((current) => ({ ...current, future: "" }));
+                patchForm("baseFeatures", e.target.value);
+              }}
             />
+            <p className="field__helper">Keep this payload close to a realistic baseline before sweeping one field.</p>
+            {!futureDraft.valid ? <Message text="Base feature JSON is invalid. Fix formatting before running the sweep." tone="warning" /> : null}
+            {formatStatus.future ? (
+              <Message
+                text={formatStatus.future}
+                tone="success"
+                onDismiss={() => setFormatStatus((current) => ({ ...current, future: "" }))}
+                dismissLabel="Dismiss future sweep format notice"
+              />
+            ) : null}
             <label className="field">
               <span>Sweep values</span>
               <input
@@ -407,12 +576,17 @@ export function MonitoringPage({
                 onChange={(event) => patchForm("futureValues", event.target.value)}
                 placeholder="e.g. 1,2,3,4 or 0.1,0.5,0.9"
               />
+              <p className="field__helper">Enter a comma-separated range of candidate values to test.</p>
             </label>
             <button className="button" onClick={handleFutureSweep}>
               Run Sweep
             </button>
             {futureResult?.predictions?.length > 0 && (
               <div className="stack" style={{ marginTop: "1rem" }}>
+                <div className="section-divider">
+                  <span className="section-divider__title">Sweep Output</span>
+                  <p className="section-divider__detail">Review the response curve first, then inspect each candidate value below.</p>
+                </div>
                 <span className="tiny-eyebrow">Sweep Analysis</span>
                 <MiniAreaChart
                   points={futureResult.predictions.map((row, index) => ({

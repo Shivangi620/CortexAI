@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  BeforeAfterChart,
   Checkbox,
   DataTable,
   DetailJson,
+  InsightSummary,
   KeyValueList,
   Message,
   MiniAreaChart,
@@ -122,6 +124,11 @@ function roundNumeric(value, digits = 2) {
   return Number.isFinite(numeric) ? Number(numeric.toFixed(digits)) : 0;
 }
 
+function formatPercent(value, digits = 1) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${numeric.toFixed(digits).replace(/\.0$/, "")}%` : "—";
+}
+
 function parseScenarioFilters(value) {
   if (Array.isArray(value)) return value;
   if (!value) return [];
@@ -150,13 +157,11 @@ export function ToolsPage({
   messages,
   outputs,
   metaStatus,
+  selectedDatasetId,
+  datasetProfile,
   datasetColumns = [],
   trainedFeatureNames = [],
   selectedJobId,
-  loading,
-  predictResult,
-  predictMessage,
-  handlePredict,
   futureResult,
   futureMessage,
   handleFutureSweep,
@@ -222,6 +227,16 @@ export function ToolsPage({
     null;
   const baselineValues = selectedReferenceProfile?.values || scenarioContext?.default_payload || {};
   const selectedRun = useMemo(() => jobs.find((job) => job.id === selectedJobId) || null, [jobs, selectedJobId]);
+  const syntheticRecommendedRows = useMemo(() => {
+    const rows = Number(datasetProfile?.rows || 0);
+    if (!rows) return null;
+    if (rows < 100) return Math.max(100, rows * 10);
+    if (rows < 500) return rows * 4;
+    if (rows < 1000) return rows * 2;
+    return Math.floor(rows / 2);
+  }, [datasetProfile]);
+  const syntheticRequestedRows = String(forms.syntheticRowCount || "").trim();
+  const syntheticPlannedRows = syntheticRequestedRows || (syntheticRecommendedRows ?? "Auto");
   const selectedEnsembleIds = useMemo(
     () =>
       Array.from(
@@ -282,6 +297,49 @@ export function ToolsPage({
       strongest,
     };
   }, [scenarioResult]);
+  const syntheticComparisonChartItems = useMemo(() => {
+    const syntheticOutput = outputs.synthetic || {};
+    const originalProfile = syntheticOutput.original_profile || {};
+    const generatedRows = Number(syntheticOutput.synthetic_rows_added);
+    const originalRows = Number(syntheticOutput.original_rows ?? originalProfile.rows);
+    const totalRows = Number(syntheticOutput.total_rows ?? syntheticOutput.profile?.rows);
+    const originalMissing = Number(originalProfile.missing_pct);
+    const currentMissing = Number(syntheticOutput.profile?.missing_pct);
+    const realismScore = Number(syntheticOutput.realism_score);
+
+    return [
+      {
+        label: "Row count",
+        before: Number.isFinite(originalRows) ? originalRows : null,
+        after: Number.isFinite(totalRows) ? totalRows : null,
+        beforeLabel: Number.isFinite(originalRows) ? formatNumber(originalRows, 0) : "—",
+        afterLabel: Number.isFinite(totalRows) ? formatNumber(totalRows, 0) : "—",
+        detail: Number.isFinite(generatedRows) ? `+${formatNumber(generatedRows, 0)} synthetic rows` : "Expanded dataset",
+      },
+      {
+        label: "Missingness",
+        before: Number.isFinite(originalMissing) ? originalMissing : null,
+        after: Number.isFinite(currentMissing) ? currentMissing : null,
+        beforeLabel: formatPercent(originalMissing),
+        afterLabel: formatPercent(currentMissing),
+        detail: "Overall missing-value share",
+        max: Math.max(
+          Number.isFinite(originalMissing) ? originalMissing : 0,
+          Number.isFinite(currentMissing) ? currentMissing : 0,
+          1,
+        ),
+      },
+      {
+        label: "Realism score",
+        before: 100,
+        after: Number.isFinite(realismScore) ? realismScore : null,
+        beforeLabel: "100 baseline",
+        afterLabel: Number.isFinite(realismScore) ? formatNumber(realismScore, 1) : "—",
+        detail: syntheticOutput.verdict || "Synthetic quality judge",
+        max: 100,
+      },
+    ];
+  }, [outputs.synthetic]);
 
   useEffect(() => {
     if (!scenarioContext || focusFeatures.length) return;
@@ -493,19 +551,92 @@ export function ToolsPage({
                 </div>
               </div>
             ) : null}
-            <div className="grid grid--two">
-              {[0, 1].map((slot) => (
-                <label key={slot} className="field">
-                  <span>Driver {slot + 1}</span>
+            <fieldset className="form-fieldset">
+              <legend>Scenario drivers</legend>
+              <p className="form-fieldset__hint">Choose the features that power the upside and downside simulator lanes.</p>
+              <div className="grid grid--two">
+                {[0, 1].map((slot) => (
+                  <label key={slot} className="field">
+                    <span>Driver {slot + 1}</span>
+                    <select
+                      value={focusFeatures[slot] || ""}
+                      onChange={(event) => {
+                        const next = [...focusFeatures];
+                        next[slot] = event.target.value;
+                        setFocusFeatures(next.filter(Boolean));
+                      }}
+                    >
+                      <option value="">Select feature...</option>
+                      {numericRanges.map((item) => (
+                        <option key={item.feature} value={item.feature}>
+                          {item.feature}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            <fieldset className="form-fieldset">
+              <legend>Scenario adjustments</legend>
+              <p className="form-fieldset__hint">Tune the optimistic and stress cases with the selected driver sliders.</p>
+              <div className="scenario-grid">
+                {["upside", "downside"].map((kind) => (
+                  <article key={kind} className="scenario-card">
+                    <div className="scenario-card__header">
+                      <strong>{kind === "upside" ? "Upside Case" : "Downside Case"}</strong>
+                      <span className="tiny-eyebrow">{kind === "upside" ? "optimistic" : "stress"}</span>
+                    </div>
+                    <div className="stack compact">
+                      {focusFeatures.filter(Boolean).map((featureName) => {
+                        const range = numericRanges.find((item) => item.feature === featureName);
+                        if (!range) return null;
+                        const currentValue = scenarioValues[kind]?.[featureName] ?? range.median;
+                        return (
+                          <label key={`${kind}-${featureName}`} className="field">
+                            <span>{featureName}</span>
+                            <input
+                              type="range"
+                              min={range.min}
+                              max={range.max}
+                              step={range.step || 0.1}
+                              value={currentValue}
+                              onChange={(event) =>
+                                setScenarioValues((current) => ({
+                                  ...current,
+                                  [kind]: {
+                                    ...current[kind],
+                                    [featureName]: Number(event.target.value),
+                                  },
+                                }))
+                              }
+                            />
+                            <div className="slider-meta">
+                              <span>{range.min}</span>
+                              <strong>{formatNumber(currentValue, 2)}</strong>
+                              <span>{range.max}</span>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </fieldset>
+
+            <fieldset className="form-fieldset">
+              <legend>Guardrails and sweep</legend>
+              <p className="form-fieldset__hint">Control sweep behavior, approval thresholds, and blocked features in one place.</p>
+              <div className="scenario-policy-grid">
+                <label className="field">
+                  <span>Sweep feature</span>
                   <select
-                    value={focusFeatures[slot] || ""}
-                    onChange={(event) => {
-                      const next = [...focusFeatures];
-                      next[slot] = event.target.value;
-                      setFocusFeatures(next.filter(Boolean));
-                    }}
+                    value={forms.scenarioSweepFeature || ""}
+                    onChange={(event) => patchForm("scenarioSweepFeature", event.target.value)}
                   >
-                    <option value="">Select feature...</option>
+                    <option value="">Select a sweep feature...</option>
                     {numericRanges.map((item) => (
                       <option key={item.feature} value={item.feature}>
                         {item.feature}
@@ -513,106 +644,46 @@ export function ToolsPage({
                     ))}
                   </select>
                 </label>
-              ))}
-            </div>
-
-            <div className="scenario-grid">
-              {["upside", "downside"].map((kind) => (
-                <article key={kind} className="scenario-card">
-                  <div className="scenario-card__header">
-                    <strong>{kind === "upside" ? "Upside Case" : "Downside Case"}</strong>
-                    <span className="tiny-eyebrow">{kind === "upside" ? "optimistic" : "stress"}</span>
-                  </div>
-                  <div className="stack compact">
-                    {focusFeatures.filter(Boolean).map((featureName) => {
-                      const range = numericRanges.find((item) => item.feature === featureName);
-                      if (!range) return null;
-                      const currentValue = scenarioValues[kind]?.[featureName] ?? range.median;
-                      return (
-                        <label key={`${kind}-${featureName}`} className="field">
-                          <span>{featureName}</span>
-                          <input
-                            type="range"
-                            min={range.min}
-                            max={range.max}
-                            step={range.step || 0.1}
-                            value={currentValue}
-                            onChange={(event) =>
-                              setScenarioValues((current) => ({
-                                ...current,
-                                [kind]: {
-                                  ...current[kind],
-                                  [featureName]: Number(event.target.value),
-                                },
-                              }))
-                            }
-                          />
-                          <div className="slider-meta">
-                            <span>{range.min}</span>
-                            <strong>{formatNumber(currentValue, 2)}</strong>
-                            <span>{range.max}</span>
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </article>
-              ))}
-            </div>
-            <div className="scenario-policy-grid">
-              <label className="field">
-                <span>Sweep feature</span>
-                <select
-                  value={forms.scenarioSweepFeature || ""}
-                  onChange={(event) => patchForm("scenarioSweepFeature", event.target.value)}
-                >
-                  <option value="">Select a sweep feature...</option>
-                  {numericRanges.map((item) => (
-                    <option key={item.feature} value={item.feature}>
-                      {item.feature}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span>Sweep values</span>
-                <input
-                  value={forms.scenarioSweepValues}
-                  onChange={(event) => patchForm("scenarioSweepValues", event.target.value)}
-                  placeholder="10,20,30"
-                />
-              </label>
-              <label className="field">
-                <span>Max change before approval (%)</span>
-                <input
-                  type="number"
-                  min="0"
-                  value={forms.scenarioMaxChangePct}
-                  onChange={(event) => patchForm("scenarioMaxChangePct", event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Blocked features</span>
-                <input
-                  value={forms.scenarioBlockedFeatures}
-                  onChange={(event) => patchForm("scenarioBlockedFeatures", event.target.value)}
-                  placeholder="comma,separated,features"
-                />
-              </label>
-            </div>
-            <Checkbox
-              checked={Boolean(forms.scenarioHardBounds)}
-              onChange={(checked) => patchForm("scenarioHardBounds", checked)}
-              label="Block scenarios that move outside the trained feature range"
-            />
-            <label className="field">
-              <span>Approved scenario IDs</span>
-              <input
-                value={forms.scenarioApprovedIds}
-                onChange={(event) => patchForm("scenarioApprovedIds", event.target.value)}
-                placeholder="scenario-1,scenario-2"
+                <label className="field">
+                  <span>Sweep values</span>
+                  <input
+                    value={forms.scenarioSweepValues}
+                    onChange={(event) => patchForm("scenarioSweepValues", event.target.value)}
+                    placeholder="10,20,30"
+                  />
+                </label>
+                <label className="field">
+                  <span>Max change before approval (%)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={forms.scenarioMaxChangePct}
+                    onChange={(event) => patchForm("scenarioMaxChangePct", event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>Blocked features</span>
+                  <input
+                    value={forms.scenarioBlockedFeatures}
+                    onChange={(event) => patchForm("scenarioBlockedFeatures", event.target.value)}
+                    placeholder="comma,separated,features"
+                  />
+                </label>
+              </div>
+              <Checkbox
+                checked={Boolean(forms.scenarioHardBounds)}
+                onChange={(checked) => patchForm("scenarioHardBounds", checked)}
+                label="Block scenarios that move outside the trained feature range"
               />
-            </label>
+              <label className="field">
+                <span>Approved scenario IDs</span>
+                <input
+                  value={forms.scenarioApprovedIds}
+                  onChange={(event) => patchForm("scenarioApprovedIds", event.target.value)}
+                  placeholder="scenario-1,scenario-2"
+                />
+              </label>
+            </fieldset>
             <div className="inline-actions">
               <button className="button button--ghost tiny" type="button" onClick={approveScenarioReviews}>
                 Approve Review Scenarios
@@ -621,24 +692,28 @@ export function ToolsPage({
                 Save Scenario Pack
               </button>
             </div>
-            <div className="grid grid--two">
-              <label className="field">
-                <span>Pack name</span>
-                <input
-                  value={forms.scenarioPackName}
-                  onChange={(event) => patchForm("scenarioPackName", event.target.value)}
-                  placeholder="Q2 pricing guardrail pack"
-                />
-              </label>
-              <label className="field">
-                <span>Pack description</span>
-                <input
-                  value={forms.scenarioPackDescription}
-                  onChange={(event) => patchForm("scenarioPackDescription", event.target.value)}
-                  placeholder="Reusable scenarios for this run"
-                />
-              </label>
-            </div>
+            <fieldset className="form-fieldset">
+              <legend>Scenario pack metadata</legend>
+              <p className="form-fieldset__hint">Name and describe reusable packs before saving them for the active run.</p>
+              <div className="grid grid--two">
+                <label className="field">
+                  <span>Pack name</span>
+                  <input
+                    value={forms.scenarioPackName}
+                    onChange={(event) => patchForm("scenarioPackName", event.target.value)}
+                    placeholder="Q2 pricing guardrail pack"
+                  />
+                </label>
+                <label className="field">
+                  <span>Pack description</span>
+                  <input
+                    value={forms.scenarioPackDescription}
+                    onChange={(event) => patchForm("scenarioPackDescription", event.target.value)}
+                    placeholder="Reusable scenarios for this run"
+                  />
+                </label>
+              </div>
+            </fieldset>
             <Message text={scenarioMessage} />
             <Message text={scenarioPacksMessage} tone="warning" />
           </div>
@@ -678,6 +753,21 @@ export function ToolsPage({
               meta={scenarioResult?.cohort?.rows ? `${scenarioResult.cohort.rows} rows` : "single baseline"}
             />
           </div>
+          {scenarioResult ? (
+            <InsightSummary
+              title="Scenario result summary"
+              tone="success"
+              items={[
+                `${scenarioComparisonSummary.executed} scenarios executed with ${scenarioComparisonSummary.positive} positive deltas.`,
+                scenarioComparisonSummary.strongest?.name
+                  ? `${scenarioComparisonSummary.strongest.name} is the current best case.`
+                  : null,
+                scenarioResult?.guardrail_summary
+                  ? `${scenarioResult.guardrail_summary.review_required ?? 0} scenarios need review and ${scenarioResult.guardrail_summary.blocked ?? 0} are blocked.`
+                  : null,
+              ]}
+            />
+          ) : null}
           <MiniAreaChart
             points={scenarioChartPoints}
             valueKey="value"
@@ -885,6 +975,17 @@ export function ToolsPage({
                 Find Optimal Path
               </button>
               <Message text={goalSeekerMessage} />
+              {goalSeeker ? (
+                <InsightSummary
+                  title="Goal seeker summary"
+                  items={[
+                    `Current output is ${goalSeeker?.current_prediction ?? goalSeeker?.prediction ?? "unknown"} and the target is ${goalSeeker?.target_prediction ?? forms.goalSeekTarget ?? "unknown"}.`,
+                    Array.isArray(goalSeeker?.suggestions) && goalSeeker.suggestions.length
+                      ? `${goalSeeker.suggestions.length} counterfactual adjustments are available.`
+                      : goalSeeker?.message || goalSeeker?.error || "No counterfactual adjustments are available yet.",
+                  ]}
+                />
+              ) : null}
             </div>
           </Panel>
 
@@ -970,6 +1071,17 @@ export function ToolsPage({
               Run Sweep
             </button>
             <Message text={futureMessage} />
+            {futureResult?.predictions?.length > 0 ? (
+              <InsightSummary
+                title="Future sweep summary"
+                items={[
+                  `${futureResult.predictions.length} sweep points were generated for ${forms.sweepFeature || "the selected feature"}.`,
+                  `Predictions range from ${formatNumber(
+                    Math.min(...futureResult.predictions.map((row) => Number(row.prediction) || 0)),
+                  )} to ${formatNumber(Math.max(...futureResult.predictions.map((row) => Number(row.prediction) || 0)))}.`,
+                ]}
+              />
+            ) : null}
           </div>
         </Panel>
 
@@ -1058,17 +1170,27 @@ export function ToolsPage({
           {LAB_TABS.map((tab) => (
             <button
               key={tab.id}
+              id={`${tab.id}-tab`}
               className={`tab-strip__button ${activeLabTab === tab.id ? "tab-strip__button--active" : ""}`}
               type="button"
               role="tab"
               aria-selected={activeLabTab === tab.id}
+              aria-controls={`${tab.id}-panel`}
+              tabIndex={activeLabTab === tab.id ? 0 : -1}
               onClick={() => setActiveLabTab(tab.id)}
             >
               {tab.label}
             </button>
           ))}
         </div>
-        <div style={{ marginTop: "1.25rem" }}>{renderLabTab()}</div>
+        <div
+          id={`${activeLabTab}-panel`}
+          role="tabpanel"
+          aria-labelledby={`${activeLabTab}-tab`}
+          style={{ marginTop: "1.25rem" }}
+        >
+          {renderLabTab()}
+        </div>
       </Panel>
 
       <div className="grid grid--two">
@@ -1152,6 +1274,16 @@ export function ToolsPage({
             <Message text={ensembleMessage} />
             {ensembleResult ? (
               <>
+                <InsightSummary
+                  title="Ensemble result summary"
+                  tone="success"
+                  items={[
+                    `${ensembleResult.models_combined?.length || 0} models were combined with ${ensembleResult.strategy || forms.ensembleStrategy}.`,
+                    `${ensembleResult.metric_name || "Ensemble score"} is ${
+                      ensembleResult.ensemble_score === undefined ? "not available yet" : formatNumber(ensembleResult.ensemble_score, 4)
+                    }.`,
+                  ]}
+                />
                 <KeyValueList
                   items={[
                     { label: "New run", value: ensembleResult.job_id || "—" },
@@ -1191,6 +1323,7 @@ export function ToolsPage({
             <label className="field">
               <span>Inference contract file</span>
               <input ref={uploadRefs.contractUploadRef} type="file" />
+              <p className="field__helper">Upload the contract or schema file you want to validate for production readiness.</p>
             </label>
             <button className="button button--secondary" type="submit">
               Validate Contract
@@ -1204,6 +1337,7 @@ export function ToolsPage({
             <label className="field">
               <span>Batch input (CSV)</span>
               <input ref={uploadRefs.batchUploadRef} type="file" />
+              <p className="field__helper">Choose a CSV payload to score every row in one batch inference run.</p>
             </label>
             <button className="button button--primary" type="submit">
               Run Batch Inference
@@ -1216,6 +1350,30 @@ export function ToolsPage({
           title="Synthetic and meta-learning tools"
           subtitle="Augmentation, judging, and model-prior discovery tools stay in the same lab."
         >
+          <div className="monitoring-retrain-plan monitoring-retrain-plan--compact">
+            <div className="monitoring-retrain-plan__header">
+              <strong>Expansion plan</strong>
+              <span className="tiny-eyebrow">{selectedDatasetId ? "dataset ready" : "select dataset"}</span>
+            </div>
+            <div className="monitoring-retrain-plan__grid">
+              <div className="monitoring-retrain-plan__item">
+                <span>Current dataset</span>
+                <strong>{selectedDatasetId || "—"}</strong>
+              </div>
+              <div className="monitoring-retrain-plan__item">
+                <span>Current rows</span>
+                <strong>{datasetProfile?.rows ?? "—"}</strong>
+              </div>
+              <div className="monitoring-retrain-plan__item">
+                <span>Recommended rows</span>
+                <strong>{syntheticRecommendedRows ?? "—"}</strong>
+              </div>
+              <div className="monitoring-retrain-plan__item">
+                <span>Planned addition</span>
+                <strong>{syntheticPlannedRows}</strong>
+              </div>
+            </div>
+          </div>
           <label className="field">
             <span>Requested synthetic rows</span>
             <input
@@ -1232,6 +1390,15 @@ export function ToolsPage({
             <button className="button button--secondary" type="button" onClick={syntheticJudge}>
               Judge Synthetic Quality
             </button>
+            {syntheticRecommendedRows ? (
+              <button
+                className="button button--ghost"
+                type="button"
+                onClick={() => patchForm("syntheticRowCount", String(syntheticRecommendedRows))}
+              >
+                Use Recommended
+              </button>
+            ) : null}
           </div>
           <Message text={messages.synthetic} />
 
@@ -1248,16 +1415,7 @@ export function ToolsPage({
             <>
               <div className="stack compact">
                 <span className="tiny-eyebrow">Synthetic comparison</span>
-                <KeyValueList
-                  items={[
-                    { label: "Original rows", value: outputs.synthetic.original_rows ?? "—" },
-                    { label: "Synthetic rows", value: outputs.synthetic.synthetic_rows_added ?? "—" },
-                    { label: "Expanded total", value: outputs.synthetic.total_rows ?? "—" },
-                    { label: "Source dataset", value: outputs.synthetic.dataset_id || "—" },
-                    { label: "Expanded dataset", value: outputs.synthetic.new_dataset_id || "—" },
-                    { label: "Verdict", value: outputs.synthetic.verdict || "—" },
-                  ]}
-                />
+                <BeforeAfterChart items={syntheticComparisonChartItems} />
               </div>
               <KeyValueList
                 items={[

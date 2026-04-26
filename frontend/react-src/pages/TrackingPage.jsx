@@ -1,6 +1,7 @@
 import React from "react";
 import {
   DataTable,
+  InsightSummary,
   KeyValueList,
   Message,
   PageHero,
@@ -172,7 +173,7 @@ export function TrackingPage({
         <StatCard label="Run filter" value={forms.runOriginFilter || "All"} detail="current registry lens" />
       </div>
 
-      <Panel title="🗂 Dataset Manager" subtitle="Refresh catalog, load datasets, or manage archives.">
+      <Panel title="Dataset Manager" subtitle="Load datasets, manage archive state, and remove records directly from the workspace catalog.">
         <div className="stack compact">
           <Checkbox
             label="Show archived datasets"
@@ -208,8 +209,7 @@ export function TrackingPage({
             </button>
           </div>
           <button
-            className="button"
-            style={{ color: "var(--danger)", borderColor: "var(--danger)" }}
+            className="button button--danger"
             onClick={() => handleDeleteDataset(selectedDatasetId)}
             disabled={!selectedDatasetId}
           >
@@ -230,7 +230,7 @@ export function TrackingPage({
           />
         </Panel>
         <Panel
-          title="Dataset Time-Machine"
+          title="Dataset History"
           subtitle="Historical snapshots of data DNA. Monitor schema evolution, null rates, and quality drift."
         >
           <div className="stack">
@@ -274,7 +274,7 @@ export function TrackingPage({
           </div>
         </Panel>
 
-        <Panel title="Mission Diffs" subtitle="Inspect exact technical changes between two specific mission runs.">
+        <Panel title="Run Diffs" subtitle="Inspect exact technical changes between two specific mission runs.">
           <div className="stack">
             <div className="split">
               <label className="field">
@@ -352,7 +352,7 @@ export function TrackingPage({
 
       <div className="grid grid--two">
         <Panel
-          title="Multi-Model Battleground"
+          title="Model Comparison Arena"
           subtitle="Pit two models against each other on the latest workspace slice."
         >
           <div className="stack">
@@ -428,6 +428,20 @@ export function TrackingPage({
               Launch Comparison
             </button>
             <Message text={compareMessage} />
+            {compareResult?.comparison?.length > 0 ? (
+              <InsightSummary
+                title="Comparison summary"
+                items={[
+                  `${compareResult.comparison.length} runs are in the active comparison set.`,
+                  compareResult.comparison[0]?.model_name
+                    ? `${compareResult.comparison[0].model_name} appears first in the current result set.`
+                    : null,
+                  compareResult?.unresolved?.length
+                    ? `${compareResult.unresolved.length} identifiers could not be resolved.`
+                    : "All requested identifiers resolved successfully.",
+                ]}
+              />
+            ) : null}
             {compareResult?.unresolved?.length > 0 && (
               <div className="message message--warning tiny">
                 Unresolved identifiers: {compareResult.unresolved.join(", ")}

@@ -5,9 +5,11 @@ from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
+from pandas.api.types import CategoricalDtype
 
 from core.file_loader import load_dataframe
 from infra.database import DatasetModel, ExperimentRun, JobModel, WorkspaceModel, NotificationModel, db_session
+from infra.result_contract import sanitize_for_json
 from services.data_sanitizer import build_dataset_version_report
 
 
@@ -351,17 +353,20 @@ def synthetic_data_judge(dataset_id: str) -> Dict[str, Any]:
             return {"error": "Dataset not found"}
         if not dataset.parent_dataset_id:
             return {"error": "Synthetic judge needs a derived dataset with a parent dataset."}
+        dataset_file_path = dataset.file_path
+        parent_dataset_id = dataset.parent_dataset_id
 
         parent = (
             db.query(DatasetModel)
-            .filter(DatasetModel.id == dataset.parent_dataset_id)
+            .filter(DatasetModel.id == parent_dataset_id)
             .first()
         )
         if not parent:
             return {"error": "Parent dataset not found"}
+        parent_file_path = parent.file_path
 
-    current_df = load_dataframe(filepath=dataset.file_path)
-    parent_df = load_dataframe(filepath=parent.file_path)
+    current_df = load_dataframe(filepath=dataset_file_path)
+    parent_df = load_dataframe(filepath=parent_file_path)
     if current_df is None or current_df.empty or parent_df is None or parent_df.empty:
         return {"error": "Could not load datasets for judging"}
 
@@ -371,9 +376,18 @@ def synthetic_data_judge(dataset_id: str) -> Dict[str, Any]:
     numeric_cols = [
         col for col in synthetic_df.select_dtypes(include=[np.number]).columns if col in parent_df.columns
     ]
-    cat_cols = [
-        col for col in synthetic_df.select_dtypes(include=["object", "category", "bool"]).columns if col in parent_df.columns
-    ]
+    cat_cols = []
+    for col in synthetic_df.columns:
+        if col not in parent_df.columns:
+            continue
+        series = synthetic_df[col]
+        if (
+            pd.api.types.is_object_dtype(series)
+            or isinstance(series.dtype, CategoricalDtype)
+            or pd.api.types.is_bool_dtype(series)
+            or pd.api.types.is_string_dtype(series)
+        ):
+            cat_cols.append(col)
 
     notes: List[str] = []
     realism_score = 100.0
@@ -416,16 +430,16 @@ def synthetic_data_judge(dataset_id: str) -> Dict[str, Any]:
 
     realism_score = round(max(0.0, min(100.0, realism_score)), 1)
     verdict = "Strong" if realism_score >= 85 else "Usable" if realism_score >= 70 else "Review before retraining"
-    return {
+    return sanitize_for_json({
         "dataset_id": dataset_id,
-        "parent_dataset_id": dataset.parent_dataset_id,
+        "parent_dataset_id": parent_dataset_id,
         "realism_score": realism_score,
         "verdict": verdict,
         "rows_evaluated": int(len(synthetic_df)),
         "duplicate_ratio": round(duplicate_ratio, 4),
         "avg_missing_delta": round(float(np.mean(missing_deltas)) if missing_deltas else 0.0, 4),
         "notes": notes[:10],
-    }
+    })
 
 
 def _json_load(value: Any, default: Any) -> Any:

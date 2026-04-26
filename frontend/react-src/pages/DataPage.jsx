@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo, useState } from "react";
 import {
   DataTable,
   KeyValueList,
@@ -33,6 +33,8 @@ export function DataPage({
   mergeState,
 }) {
   const datasetColumns = datasetProfile?.columns || [];
+  const [columnFilter, setColumnFilter] = useState("");
+  const [lineageFilter, setLineageFilter] = useState("");
 
   // Health Data
   const health = datasetProfile?.health || datasetHealth || {};
@@ -50,6 +52,33 @@ export function DataPage({
     max: stats.max ?? "—",
     top: stats.top_values?.join(", ") || "—",
   }));
+  const filteredColumnStatsRows = useMemo(() => {
+    const query = columnFilter.trim().toLowerCase();
+    if (!query) return columnStatsRows;
+    return columnStatsRows.filter((row) =>
+      [row.column, row.dtype, row.top]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query)),
+    );
+  }, [columnFilter, columnStatsRows]);
+  const filteredLineageNodes = useMemo(() => {
+    const query = lineageFilter.trim().toLowerCase();
+    if (!query) return datasetLineage?.nodes || [];
+    return (datasetLineage?.nodes || []).filter((node) =>
+      [node.label, node.type, node.detail]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query)),
+    );
+  }, [datasetLineage, lineageFilter]);
+  const filteredLineageEdges = useMemo(() => {
+    const query = lineageFilter.trim().toLowerCase();
+    if (!query) return datasetLineage?.edges || [];
+    return (datasetLineage?.edges || []).filter((edge) =>
+      [edge.source, edge.target, edge.label]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query)),
+    );
+  }, [datasetLineage, lineageFilter]);
 
   const leftColumns = datasets.find((d) => d.id === forms.mergeLeftId)?.columns || [];
   const rightColumns = datasets.find((d) => d.id === forms.mergeRightId)?.columns || [];
@@ -112,7 +141,22 @@ export function DataPage({
         />
       )}
 
-      <Panel title="🔬 Per-Column Statistics" subtitle="Deep dive into each feature's distribution and quality.">
+      <Panel title="Column Statistics" subtitle="Deep dive into each feature's distribution and quality.">
+        <div className="section-divider">
+          <span className="section-divider__title">Column Explorer</span>
+          <p className="section-divider__detail">Filter the schema first, then scan distribution, missingness, and cardinality in one place.</p>
+        </div>
+        <label className="field">
+          <span>Filter columns</span>
+          <input
+            value={columnFilter}
+            onChange={(event) => setColumnFilter(event.target.value)}
+            placeholder="Search by column, type, or top values"
+          />
+          <Badge compact tone="default">
+            Showing {filteredColumnStatsRows.length} of {columnStatsRows.length} columns
+          </Badge>
+        </label>
         <DataTable
           columns={[
             { key: "column", label: "Column" },
@@ -125,13 +169,13 @@ export function DataPage({
             { key: "max", label: "Max" },
             { key: "top", label: "Top Values" },
           ]}
-          rows={columnStatsRows}
+          rows={filteredColumnStatsRows}
           compact
         />
       </Panel>
 
-      <div className="grid grid--two">
-        <Panel title="🧹 Data Repair Assistant" subtitle="Preview or apply automated cleaning before training.">
+      <div className="grid grid--two data-page__analysis-grid">
+        <Panel title="Data Repair Assistant" subtitle="Preview or apply automated cleaning before training.">
           <div className="stack">
             <label className="field">
               <span>Target column for repair</span>
@@ -175,7 +219,7 @@ export function DataPage({
           )}
         </Panel>
 
-        <Panel title="🤖 Auto Problem Detection" subtitle="Suggested task and target candidates.">
+        <Panel title="Auto Problem Detection" subtitle="Suggested task and target candidates.">
           <KeyValueList
             items={[
               { label: "Suggested Target", value: datasetDetect?.suggested_target || "—" },
@@ -201,7 +245,7 @@ export function DataPage({
 
       <div className="grid grid--one">
         <Panel
-          title="🔍 Data Leakage & Quality Report"
+          title="Data Leakage And Quality"
           subtitle="Detect target leakage, constants, and future leakage."
         >
           <div className="stack">
@@ -239,7 +283,7 @@ export function DataPage({
       </div>
 
       <div className="grid grid--two">
-        <Panel title="🧾 Dataset Version Comparison" subtitle="Detailed diff between current and previous versions.">
+        <Panel title="Dataset Version Comparison" subtitle="Detailed diff between current and previous versions.">
           {datasetVersions && !datasetVersions.error ? (
             <div className="stack">
               <KeyValueList
@@ -256,10 +300,21 @@ export function DataPage({
           )}
         </Panel>
 
-        <Panel title="🕸 Dataset Lineage Graph" subtitle="Visualizing the provenance of this dataset.">
+        <Panel title="Dataset Lineage Graph" subtitle="Visualizing the provenance of this dataset.">
           {datasetLineage?.nodes ? (
             <div className="stack">
-              {datasetLineage.nodes.map((node, idx) => (
+              <label className="field">
+                <span>Filter lineage</span>
+                <input
+                  value={lineageFilter}
+                  onChange={(event) => setLineageFilter(event.target.value)}
+                  placeholder="Search by node, type, or operation"
+                />
+                <Badge compact tone="default">
+                  Showing {filteredLineageNodes.length} of {(datasetLineage?.nodes || []).length} nodes
+                </Badge>
+              </label>
+              {filteredLineageNodes.map((node, idx) => (
                 <div key={node.id} className="feed-card">
                   <strong>
                     {idx + 1}. {node.label}
@@ -280,7 +335,7 @@ export function DataPage({
                       { key: "target", label: "Result" },
                       { key: "label", label: "Operation" },
                     ]}
-                    rows={datasetLineage.edges.map((e) => ({
+                    rows={filteredLineageEdges.map((e) => ({
                       source: e.source.slice(0, 8),
                       target: e.target.slice(0, 8),
                       label: e.label,
@@ -290,13 +345,24 @@ export function DataPage({
               )}
             </div>
           ) : (
-            <EmptyState text="Lineage graph not available yet." />
+            <EmptyState
+              text="Lineage graph not available yet."
+              action={
+                <button className="button button--ghost" type="button" onClick={runLeakageScan}>
+                  Run Leakage Scan
+                </button>
+              }
+            />
           )}
         </Panel>
       </div>
 
-      <Panel title="🧬 Dataset Merge Studio" subtitle="Select datasets and join keys to create derived data.">
+      <Panel title="Dataset Merge Studio" subtitle="Select datasets and join keys to create derived data.">
         <div className="stack">
+          <div className="section-divider">
+            <span className="section-divider__title">Merge Setup</span>
+            <p className="section-divider__detail">Choose both datasets and keys first, then preview the join before creating a derived dataset.</p>
+          </div>
           <div className="grid grid--two">
             <div className="field">
               <span>Left Dataset</span>

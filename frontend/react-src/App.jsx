@@ -46,6 +46,9 @@ export function App() {
   const [uploadMessage, setUploadMessage] = useState("");
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadLoadingLabel, setUploadLoadingLabel] = useState("");
+  const [uploadSelectedName, setUploadSelectedName] = useState("");
+  const [uploadInspection, setUploadInspection] = useState(null);
+  const [sourceInspection, setSourceInspection] = useState(null);
   const [repairMessage, setRepairMessage] = useState("");
 
   const [jobStatus, setJobStatus] = useState(null);
@@ -106,6 +109,10 @@ export function App() {
 
   const [forms, setForms] = useState({
     uploadPdfMode: "text",
+    uploadSheetName: "",
+    uploadSqliteTable: "",
+    uploadArchiveMember: "",
+    uploadTextChunkSize: 0,
     repairTarget: "",
     targetColumn: "",
     selectedFeatureNames: [],
@@ -152,6 +159,12 @@ export function App() {
     connectorType: "PostgreSQL",
     connectorUri: "",
     connectorQuery: "SELECT * FROM your_table LIMIT 5000",
+    connectorHttpMethod: "GET",
+    connectorHeadersJson: "{}",
+    connectorBodyJson: "{}",
+    connectorSheetName: "",
+    connectorSqliteTable: "",
+    connectorArchiveMember: "",
     importMode: "Upload File",
     showArchived: false,
     mergeLeftId: "",
@@ -558,6 +571,10 @@ export function App() {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("pdf_mode", forms.uploadPdfMode);
+    formData.append("sheet_name", forms.uploadSheetName);
+    formData.append("sqlite_table", forms.uploadSqliteTable);
+    formData.append("archive_member", forms.uploadArchiveMember);
+    formData.append("text_chunk_size", String(forms.uploadTextChunkSize || 0));
     setUploadLoading(true);
     setUploadLoadingLabel(`Ingesting ${file.name} into Mission Control...`);
     setUploadMessage("");
@@ -582,6 +599,44 @@ export function App() {
     }
   }
 
+  async function handleInspectUpload(event) {
+    if (event && event.preventDefault) event.preventDefault();
+    const file = uploadRef.current?.files?.[0];
+    if (!file) {
+      setUploadSelectedName("");
+      setUploadInspection(null);
+      setUploadMessage("Choose a file first.");
+      return;
+    }
+    setUploadSelectedName(file.name || "");
+    const formData = new FormData();
+    formData.append("file", file);
+    setUploadLoading(true);
+    setUploadLoadingLabel(`Inspecting ${file.name} for sheets, tables, and archive members...`);
+    setUploadMessage("");
+    try {
+      const payload = await api("/api/inspect-upload", { method: "POST", body: formData });
+      if (payload.error) {
+        setUploadInspection(null);
+        setUploadMessage(payload.error);
+      } else {
+        setUploadInspection(payload);
+        patchForm({
+          uploadSheetName: payload.recommended?.sheet_name || "",
+          uploadSqliteTable: payload.recommended?.sqlite_table || "",
+          uploadArchiveMember: payload.recommended?.archive_member || "",
+        });
+        setUploadMessage(`Inspection ready for ${file.name}. Adjust options if needed, then ingest.`);
+      }
+    } catch (error) {
+      setUploadInspection(null);
+      setUploadMessage(error.message);
+    } finally {
+      setUploadLoading(false);
+      setUploadLoadingLabel("");
+    }
+  }
+
   async function handleImportSource(event) {
     event.preventDefault();
     patchForm("ocrText", "");
@@ -593,6 +648,12 @@ export function App() {
           source_type: forms.connectorType.toLowerCase(),
           connection_uri: forms.connectorUri,
           query: forms.connectorQuery,
+          http_method: forms.connectorHttpMethod,
+          headers_json: forms.connectorHeadersJson,
+          body_json: forms.connectorBodyJson,
+          sheet_name: forms.connectorSheetName,
+          sqlite_table: forms.connectorSqliteTable,
+          archive_member: forms.connectorArchiveMember,
         }),
       });
       if (payload.error) {
@@ -605,6 +666,38 @@ export function App() {
         if (payload.dataset_id) setSelectedDatasetId(payload.dataset_id);
       }
     } catch (error) {
+      setUploadMessage(error.message);
+    }
+  }
+
+  async function handleInspectSource(event) {
+    if (event && event.preventDefault) event.preventDefault();
+    try {
+      const payload = await api("/api/inspect-source", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_type: forms.connectorType.toLowerCase(),
+          connection_uri: forms.connectorUri,
+          http_method: forms.connectorHttpMethod,
+          headers_json: forms.connectorHeadersJson,
+          body_json: forms.connectorBodyJson,
+        }),
+      });
+      if (payload.error) {
+        setSourceInspection(null);
+        setUploadMessage(payload.error);
+      } else {
+        setSourceInspection(payload);
+        patchForm({
+          connectorSheetName: payload.recommended?.sheet_name || "",
+          connectorSqliteTable: payload.recommended?.sqlite_table || "",
+          connectorArchiveMember: payload.recommended?.archive_member || "",
+        });
+        setUploadMessage("Remote source inspected. Review the discovered options before importing.");
+      }
+    } catch (error) {
+      setSourceInspection(null);
       setUploadMessage(error.message);
     }
   }
@@ -1529,10 +1622,15 @@ export function App() {
         forms={forms}
         patchForm={patchForm}
         uploadRef={uploadRef}
+        uploadSelectedName={uploadSelectedName}
+        uploadInspection={uploadInspection}
+        sourceInspection={sourceInspection}
+        handleInspectUpload={handleInspectUpload}
         handleUpload={handleUpload}
         uploadMessage={uploadMessage}
         uploadPreview={uploadPreview}
         ingestSummary={ingestSummary}
+        handleInspectSource={handleInspectSource}
         handleImportSource={handleImportSource}
         handleTrain={handleTrain}
         trainMessage={trainMessage}
@@ -1645,6 +1743,8 @@ export function App() {
         messages={toolsState.messages}
         outputs={toolsState.outputs}
         metaStatus={toolsState.metaStatus}
+        selectedDatasetId={selectedDatasetId}
+        datasetProfile={datasetProfile}
         datasetColumns={datasetProfile?.columns || []}
         trainedFeatureNames={jobStatus?.results?.feature_names || []}
         selectedJobId={selectedJobId}

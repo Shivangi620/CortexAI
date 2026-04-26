@@ -13,6 +13,81 @@ import {
 } from "../components/ui.jsx";
 import { formatDate, formatNumber } from "../lib/format.js";
 
+function StructureSummary({ title, inspection, selectedValues = {}, onSelect = () => {} }) {
+  if (!inspection) return null;
+
+  const recommended = inspection.recommended || {};
+  const sections = [
+    {
+      label: "ZIP Members",
+      items: inspection.zip_members || [],
+      recommendedValue: recommended.archive_member,
+      selectedValue: selectedValues.archive_member,
+      selectKey: "archive_member",
+    },
+    {
+      label: "Excel Sheets",
+      items: inspection.excel_sheets || [],
+      recommendedValue: recommended.sheet_name,
+      selectedValue: selectedValues.sheet_name,
+      selectKey: "sheet_name",
+    },
+    {
+      label: "SQLite Tables",
+      items: inspection.sqlite_tables || [],
+      recommendedValue: recommended.sqlite_table,
+      selectedValue: selectedValues.sqlite_table,
+      selectKey: "sqlite_table",
+    },
+  ].filter((section) => section.items.length);
+
+  return (
+    <div className="intake-summary">
+      <div className="intake-summary__header">
+        <div>
+          <span className="tiny-eyebrow">{title}</span>
+          <strong>{inspection.filename || "Detected structure"}</strong>
+        </div>
+        <span className="intake-summary__ext">{inspection.extension || "source"}</span>
+      </div>
+      {inspection.warning ? <div className="message message--warning">{inspection.warning}</div> : null}
+      {sections.length ? (
+        <div className="intake-summary__grid">
+          {sections.map((section) => (
+            <div key={section.label} className="intake-summary__card">
+              <div className="intake-summary__card-head">
+                <strong>{section.label}</strong>
+                <span>{section.items.length} found</span>
+              </div>
+              <div className="training-chip-grid">
+                {section.items.map((item) => (
+                  <button
+                    type="button"
+                    key={item}
+                    className={[
+                      "training-chip",
+                      "intake-chip",
+                      section.recommendedValue === item ? "intake-chip--recommended" : "",
+                      section.selectedValue === item ? "intake-chip--selected" : "training-chip--soft",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    onClick={() => onSelect(section.selectKey, item)}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="intake-summary__empty">No nested sheets, tables, or archive members were detected for this source.</div>
+      )}
+    </div>
+  );
+}
+
 export function OverviewPage({
   jobs,
   selectedDatasetId,
@@ -26,18 +101,94 @@ export function OverviewPage({
   forms,
   patchForm,
   uploadRef,
+  uploadSelectedName,
+  uploadInspection,
+  sourceInspection,
+  handleInspectUpload,
   handleUpload,
   uploadMessage,
   uploadPreview,
   ingestSummary,
+  handleInspectSource,
   handleImportSource,
   handleTrain,
   trainMessage,
   handleOcrReview,
 }) {
   const acceptedFileTypes =
-    ".csv,.tsv,.xlsx,.xls,.json,.parquet,.pdf,.txt,.html,.htm,.xml,.zip,.sav,.sas7bdat,.dta,.feather";
+    ".csv,.tsv,.txt,.dat,.tab,.log,.xlsx,.xls,.xlsm,.ods,.json,.jsonl,.ndjson,.parquet,.feather,.arrow,.orc,.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif,.xml,.html,.htm,.db,.sqlite,.sqlite3,.sav,.sas7bdat,.xpt,.dta,.md,.markdown,.rtf,.docx,.eml,.msg,.zip";
   const driftReopenCount = jobs.filter((job) => job.launch_source === "drift_recommendation").length;
+  const uploadExtension = String(
+    uploadInspection?.extension || (uploadSelectedName.includes(".") ? `.${uploadSelectedName.split(".").pop()}` : ""),
+  ).toLowerCase();
+  const sourceExtension = String(
+    sourceInspection?.extension || (forms.connectorUri.includes(".") ? `.${forms.connectorUri.split(".").pop().split(/[?#]/)[0]}` : ""),
+  ).toLowerCase();
+  const showUploadPdfMode = uploadExtension === ".pdf";
+  const showUploadTextChunkSize = [
+    ".pdf",
+    ".txt",
+    ".dat",
+    ".tab",
+    ".log",
+    ".md",
+    ".markdown",
+    ".rtf",
+    ".docx",
+    ".eml",
+    ".msg",
+  ].includes(uploadExtension);
+  const showUploadExcelSheet = [".xlsx", ".xls", ".xlsm", ".ods"].includes(uploadExtension);
+  const showUploadSqliteTable = [".db", ".sqlite", ".sqlite3"].includes(uploadExtension);
+  const showUploadZipMember = uploadExtension === ".zip";
+  const connectorType = String(forms.connectorType || "");
+  const isSqlConnector = ["PostgreSQL", "MySQL", "Snowflake", "BigQuery"].includes(connectorType);
+  const showSourceExcelSheet = [".xlsx", ".xls", ".xlsm", ".ods"].includes(sourceExtension);
+  const showSourceSqliteTable = [".db", ".sqlite", ".sqlite3"].includes(sourceExtension);
+  const showSourceZipMember = sourceExtension === ".zip";
+  const connectorLabel = isSqlConnector ? "Connection URI" : "Source URI";
+  const connectorPlaceholder =
+    connectorType === "CSV URL"
+      ? "https://example.com/data.csv"
+      : connectorType === "Google Drive"
+        ? "https://drive.google.com/file/d/.../view?usp=sharing"
+        : connectorType === "Dropbox"
+          ? "https://www.dropbox.com/s/.../dataset.csv?dl=0"
+          : connectorType === "OneDrive"
+            ? "https://onedrive.live.com/?cid=...&resid=..."
+            : connectorType === "SharePoint"
+              ? "https://tenant.sharepoint.com/:x:/r/sites/.../file.xlsx"
+        : connectorType === "S3"
+          ? "s3://bucket/path/to/data.parquet"
+          : connectorType === "GCS"
+            ? "gs://bucket/path/to/data.parquet"
+            : connectorType === "Azure Blob"
+              ? "az://container/path/to/data.parquet"
+          : connectorType === "REST API"
+            ? "https://api.example.com/v1/records"
+            : "postgresql://user:pass@host:5432/db";
+  const queryLabel = isSqlConnector ? "SQL Query" : "Resource Hint";
+  const queryPlaceholder = isSqlConnector
+    ? "SELECT * FROM your_table LIMIT 5000"
+    : "Optional: dataset member inside zip, request notes, or API context";
+  const fileCapabilityGroups = [
+    { label: "Tables", items: [".csv", ".tsv", ".xlsx", ".json", ".parquet", ".feather"] },
+    { label: "Docs", items: [".pdf", ".txt", ".md", ".docx", ".eml", ".msg"] },
+    { label: "Media", items: [".png", ".jpg", ".jpeg", ".webp"] },
+    { label: "Archives", items: [".zip", ".db", ".sqlite", ".sav", ".dta"] },
+  ];
+  const uploadNeedsInspection = showUploadExcelSheet || showUploadSqliteTable || showUploadZipMember;
+  const uploadNeedsAdvanced = showUploadPdfMode || showUploadTextChunkSize || uploadNeedsInspection;
+  const handleUploadStructureSelect = (key, value) => {
+    if (key === "archive_member") patchForm({ uploadArchiveMember: value });
+    if (key === "sheet_name") patchForm({ uploadSheetName: value });
+    if (key === "sqlite_table") patchForm({ uploadSqliteTable: value });
+  };
+  const handleSourceStructureSelect = (key, value) => {
+    if (key === "archive_member") patchForm({ connectorArchiveMember: value });
+    if (key === "sheet_name") patchForm({ connectorSheetName: value });
+    if (key === "sqlite_table") patchForm({ connectorSqliteTable: value });
+  };
   const recentTimeline = jobs.slice(0, 5).map((job) => ({
     title: `${job.best_model || "Run"} • ${job.status}${job.launch_source === "drift_recommendation" ? " • Drift Reopen" : ""}`,
     detail: `Dataset ${job.dataset_id?.slice(0, 8) || "unknown"} • ${job.metric_name || "score"} ${formatNumber(job.score)}`,
@@ -99,7 +250,7 @@ export function OverviewPage({
       />
 
       <div className="grid grid--two">
-        <Panel title="Import Mode" subtitle="Choose how you want to ingest data into the studio.">
+        <Panel title="Import Mode" subtitle="Bring in structured data, cloud files, and document-style sources through a calmer guided intake flow.">
           <SegmentedControl
             options={["Upload File", "Connectors"]}
             value={forms.importMode}
@@ -107,58 +258,398 @@ export function OverviewPage({
           />
 
           {forms.importMode === "Upload File" && (
-            <form className="stack">
-              <div className="field">
-                <input type="file" ref={uploadRef} accept={acceptedFileTypes} onChange={() => handleUpload()} />
+            <form className="stack intake-shell">
+              <div className="intake-stage">
+                <div className="intake-stage__header">
+                  <div>
+                    <span className="tiny-eyebrow">Stage 1</span>
+                    <strong>Select a file</strong>
+                  </div>
+                  <span className="intake-stage__hint">The studio inspects the file first, then reveals only the controls that matter.</span>
+                </div>
+                <label className="field">
+                  <span>Source file</span>
+                  <input type="file" ref={uploadRef} accept={acceptedFileTypes} onChange={() => handleInspectUpload()} />
+                  <p className="field__helper">Choose a local dataset, document, archive, or export file for intake inspection.</p>
+                </label>
+                <div className="intake-capability-grid">
+                  {fileCapabilityGroups.map((group) => (
+                    <div key={group.label} className="intake-capability-card">
+                      <span>{group.label}</span>
+                      <div className="training-chip-grid">
+                        {group.items.map((item) => (
+                          <span key={item} className="training-chip training-chip--soft">
+                            {item}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="training-chip-grid">
-                {acceptedFileTypes.split(",").map((type) => (
-                  <span key={type} className="training-chip training-chip--soft">
-                    {type}
-                  </span>
-                ))}
+              {uploadNeedsAdvanced ? (
+                <div className="intake-stage">
+                  <div className="intake-stage__header">
+                    <div>
+                      <span className="tiny-eyebrow">Stage 2</span>
+                      <strong>Refine the parse</strong>
+                    </div>
+                    <span className="intake-stage__hint">Options appear only when the file type actually supports them.</span>
+                  </div>
+              {showUploadPdfMode || showUploadTextChunkSize ? (
+                <div className="grid grid--two">
+                  {showUploadPdfMode ? (
+                    <div className="field intake-field">
+                      <span>PDF Mode</span>
+                      <select value={forms.uploadPdfMode} onChange={(e) => patchForm({ uploadPdfMode: e.target.value })}>
+                        <option value="text">Text pages</option>
+                        <option value="tables">Extract tables</option>
+                      </select>
+                    </div>
+                  ) : null}
+                  {showUploadTextChunkSize ? (
+                    <div className="field intake-field">
+                      <span>Text Chunk Size</span>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="0 keeps original segments"
+                        value={forms.uploadTextChunkSize}
+                        onChange={(e) => patchForm({ uploadTextChunkSize: Number(e.target.value || 0) })}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {showUploadExcelSheet || showUploadSqliteTable || showUploadZipMember ? (
+                <div className="grid grid--three">
+                  {showUploadExcelSheet ? (
+                    <div className="field intake-field">
+                      <span>Excel Sheet</span>
+                      {uploadInspection?.excel_sheets?.length ? (
+                        <select
+                          value={forms.uploadSheetName}
+                          onChange={(e) => patchForm({ uploadSheetName: e.target.value })}
+                        >
+                          <option value="">Auto</option>
+                          {uploadInspection.excel_sheets.map((sheet) => (
+                            <option key={sheet} value={sheet}>
+                              {sheet}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          placeholder="Optional sheet name"
+                          value={forms.uploadSheetName}
+                          onChange={(e) => patchForm({ uploadSheetName: e.target.value })}
+                        />
+                      )}
+                    </div>
+                  ) : null}
+                  {showUploadSqliteTable ? (
+                    <div className="field intake-field">
+                      <span>SQLite Table</span>
+                      {uploadInspection?.sqlite_tables?.length ? (
+                        <select
+                          value={forms.uploadSqliteTable}
+                          onChange={(e) => patchForm({ uploadSqliteTable: e.target.value })}
+                        >
+                          <option value="">Auto</option>
+                          {uploadInspection.sqlite_tables.map((table) => (
+                            <option key={table} value={table}>
+                              {table}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          placeholder="Optional table name"
+                          value={forms.uploadSqliteTable}
+                          onChange={(e) => patchForm({ uploadSqliteTable: e.target.value })}
+                        />
+                      )}
+                    </div>
+                  ) : null}
+                  {showUploadZipMember ? (
+                    <div className="field intake-field">
+                      <span>ZIP Member</span>
+                      {uploadInspection?.zip_members?.length ? (
+                        <select
+                          value={forms.uploadArchiveMember}
+                          onChange={(e) => patchForm({ uploadArchiveMember: e.target.value })}
+                        >
+                          <option value="">Auto</option>
+                          {uploadInspection.zip_members.map((member) => (
+                            <option key={member} value={member}>
+                              {member}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          placeholder="Optional file inside archive"
+                          value={forms.uploadArchiveMember}
+                          onChange={(e) => patchForm({ uploadArchiveMember: e.target.value })}
+                        />
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+                  {uploadInspection ? (
+                    <StructureSummary
+                      title="Detected File Structure"
+                      inspection={uploadInspection}
+                      selectedValues={{
+                        archive_member: forms.uploadArchiveMember,
+                        sheet_name: forms.uploadSheetName,
+                        sqlite_table: forms.uploadSqliteTable,
+                      }}
+                      onSelect={handleUploadStructureSelect}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="intake-stage intake-stage--action">
+                <div className="intake-stage__header">
+                  <div>
+                    <span className="tiny-eyebrow">Stage 3</span>
+                    <strong>Inspect and ingest</strong>
+                  </div>
+                  <span className="intake-stage__hint">ZIP bundles, cloud snapshots, and document parses all funnel into the same dataset workspace.</span>
+                </div>
+                <div className="split">
+                  <button className="button" type="button" onClick={handleInspectUpload}>
+                    Inspect File
+                  </button>
+                  <button className="button button--primary" type="button" onClick={handleUpload}>
+                    Ingest File
+                  </button>
+                </div>
               </div>
+              <p className="tiny intake-footnote">
+                ZIP uploads can now carry normal datasets, not just export bundles. Pickle uploads stay disabled by default for safety.
+              </p>
               {uploadMessage && <p className="tiny">{uploadMessage}</p>}
               {uploadLoading && <Spinner label={uploadLoadingLabel || "Scanning dataset DNA..."} />}
             </form>
           )}
 
           {forms.importMode === "Connectors" && (
-            <form className="stack" onSubmit={handleImportSource}>
-              <div className="field">
-                <span>Connector Type</span>
-                <select value={forms.connectorType} onChange={(e) => patchForm({ connectorType: e.target.value })}>
-                  <option>PostgreSQL</option>
-                  <option>MySQL</option>
-                  <option>Snowflake</option>
-                  <option>BigQuery</option>
-                </select>
+            <form className="stack intake-shell" onSubmit={handleImportSource}>
+              <div className="intake-stage">
+                <div className="intake-stage__header">
+                  <div>
+                    <span className="tiny-eyebrow">Stage 1</span>
+                    <strong>Choose the cloud or database source</strong>
+                  </div>
+                  <span className="intake-stage__hint">Use direct links, cloud URIs, or SQL connectors from the same workspace.</span>
+                </div>
+                <fieldset className="form-fieldset">
+                  <legend>Source identity</legend>
+                  <p className="form-fieldset__hint">Select the remote system type and the URI or connection string that points to the source.</p>
+                  <div className="field">
+                    <span>Connector Type</span>
+                    <select value={forms.connectorType} onChange={(e) => patchForm({ connectorType: e.target.value })}>
+                      <option>PostgreSQL</option>
+                      <option>MySQL</option>
+                      <option>Snowflake</option>
+                      <option>BigQuery</option>
+                      <option>CSV URL</option>
+                      <option>Google Drive</option>
+                      <option>Dropbox</option>
+                      <option>OneDrive</option>
+                      <option>SharePoint</option>
+                      <option>REST API</option>
+                      <option>S3</option>
+                      <option>GCS</option>
+                      <option>Azure Blob</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <span>{connectorLabel}</span>
+                    <input
+                      type="text"
+                      placeholder={connectorPlaceholder}
+                      value={forms.connectorUri}
+                      onChange={(e) => patchForm({ connectorUri: e.target.value })}
+                    />
+                  </div>
+                </fieldset>
               </div>
-              <div className="field">
-                <span>Connection URI</span>
-                <input
-                  type="text"
-                  placeholder="postgresql://user:pass@host:5432/db"
-                  value={forms.connectorUri}
-                  onChange={(e) => patchForm({ connectorUri: e.target.value })}
-                />
+              <div className="intake-stage">
+                <div className="intake-stage__header">
+                  <div>
+                    <span className="tiny-eyebrow">Stage 2</span>
+                    <strong>Describe the remote payload</strong>
+                  </div>
+                  <span className="intake-stage__hint">Structured connectors use queries. Link-based sources can optionally add request metadata or archive hints.</span>
+                </div>
+                <fieldset className="form-fieldset">
+                  <legend>Payload definition</legend>
+                  <p className="form-fieldset__hint">Describe the query, request, or remote file structure that should be inspected and imported.</p>
+                  <div className="field">
+                    <span>{queryLabel}</span>
+                    <textarea
+                      placeholder={queryPlaceholder}
+                      value={forms.connectorQuery}
+                      onChange={(e) => patchForm({ connectorQuery: e.target.value })}
+                    />
+                  </div>
+                  {!isSqlConnector && (
+                    <div className="grid grid--two">
+                      <div className="field intake-field">
+                        <span>HTTP Method</span>
+                        <select
+                          value={forms.connectorHttpMethod}
+                          onChange={(e) => patchForm({ connectorHttpMethod: e.target.value })}
+                        >
+                          <option>GET</option>
+                          <option>POST</option>
+                        </select>
+                      </div>
+                      {showSourceZipMember ? (
+                        <div className="field intake-field">
+                          <span>ZIP Member</span>
+                          {sourceInspection?.zip_members?.length ? (
+                            <select
+                              value={forms.connectorArchiveMember}
+                              onChange={(e) => patchForm({ connectorArchiveMember: e.target.value })}
+                            >
+                              <option value="">Auto</option>
+                              {sourceInspection.zip_members.map((member) => (
+                                <option key={member} value={member}>
+                                  {member}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              placeholder="Optional archive member"
+                              value={forms.connectorArchiveMember}
+                              onChange={(e) => patchForm({ connectorArchiveMember: e.target.value })}
+                            />
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                  {!isSqlConnector && (
+                    <div className="grid grid--two">
+                      <div className="field intake-field">
+                        <span>Headers JSON</span>
+                        <textarea
+                          value={forms.connectorHeadersJson}
+                          onChange={(e) => patchForm({ connectorHeadersJson: e.target.value })}
+                        />
+                      </div>
+                      <div className="field intake-field">
+                        <span>Body JSON</span>
+                        <textarea
+                          value={forms.connectorBodyJson}
+                          onChange={(e) => patchForm({ connectorBodyJson: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {showSourceExcelSheet || showSourceSqliteTable ? (
+                    <div className="grid grid--two">
+                      {showSourceExcelSheet ? (
+                        <div className="field">
+                          <span>Excel Sheet</span>
+                          {sourceInspection?.excel_sheets?.length ? (
+                            <select
+                              value={forms.connectorSheetName}
+                              onChange={(e) => patchForm({ connectorSheetName: e.target.value })}
+                            >
+                              <option value="">Auto</option>
+                              {sourceInspection.excel_sheets.map((sheet) => (
+                                <option key={sheet} value={sheet}>
+                                  {sheet}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              placeholder="Optional sheet name"
+                              value={forms.connectorSheetName}
+                              onChange={(e) => patchForm({ connectorSheetName: e.target.value })}
+                            />
+                          )}
+                        </div>
+                      ) : null}
+                      {showSourceSqliteTable ? (
+                        <div className="field">
+                          <span>SQLite Table</span>
+                          {sourceInspection?.sqlite_tables?.length ? (
+                            <select
+                              value={forms.connectorSqliteTable}
+                              onChange={(e) => patchForm({ connectorSqliteTable: e.target.value })}
+                            >
+                              <option value="">Auto</option>
+                              {sourceInspection.sqlite_tables.map((table) => (
+                                <option key={table} value={table}>
+                                  {table}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              placeholder="Optional table name"
+                              value={forms.connectorSqliteTable}
+                              onChange={(e) => patchForm({ connectorSqliteTable: e.target.value })}
+                            />
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {sourceInspection ? (
+                    <StructureSummary
+                      title="Detected Remote Structure"
+                      inspection={sourceInspection}
+                      selectedValues={{
+                        archive_member: forms.connectorArchiveMember,
+                        sheet_name: forms.connectorSheetName,
+                        sqlite_table: forms.connectorSqliteTable,
+                      }}
+                      onSelect={handleSourceStructureSelect}
+                    />
+                  ) : null}
+                </fieldset>
               </div>
-              <div className="field">
-                <span>SQL Query</span>
-                <textarea
-                  value={forms.connectorQuery}
-                  onChange={(e) => patchForm({ connectorQuery: e.target.value })}
-                />
+              <div className="intake-stage intake-stage--action">
+                <div className="intake-stage__header">
+                  <div>
+                    <span className="tiny-eyebrow">Stage 3</span>
+                    <strong>Inspect and import</strong>
+                  </div>
+                  <span className="intake-stage__hint">Cloud file formats still get the same targeted sheet, table, and archive-member controls when needed.</span>
+                </div>
+              <div className="split">
+                {!isSqlConnector ? (
+                  <button className="button" type="button" onClick={handleInspectSource}>
+                    Inspect Source
+                  </button>
+                ) : null}
+                <button className="button button--primary" type="submit">
+                  Import From Source
+                </button>
               </div>
-              <button className="button button--primary" type="submit">
-                🔌 Import From Source
-              </button>
+              </div>
               {loading && <Spinner label="Importing and scanning remote data..." />}
             </form>
           )}
         </Panel>
 
-        <Panel title="Auto-Detect Neural Pulse" subtitle="Real-time problem detection and training forecasting.">
+        <Panel title="Auto-Detect Workspace Signals" subtitle="Real-time problem detection and training forecasting.">
           <div className="stack">
             <div className="split">
               <StatCard label="Inferred Task" value={datasetDetect?.task_type || "N/A"} tone="accent" />
@@ -200,7 +691,7 @@ export function OverviewPage({
           />
         </Panel>
 
-        <Panel title="Recent Activity Hub" subtitle="A live feed of the latest operational events in the studio.">
+        <Panel title="Recent Activity" subtitle="A live feed of the latest operational events in the studio.">
           <TimelineList items={recentTimeline} empty="No recent activity to show." />
         </Panel>
       </div>
@@ -230,7 +721,7 @@ export function OverviewPage({
               </div>
               {loading && <Spinner label="Creating dataset from OCR..." />}
               <button className="button button--primary" onClick={handleOcrReview}>
-                📝 Create Dataset From Reviewed OCR
+                Create Dataset From Reviewed OCR
               </button>
             </div>
           )}
@@ -263,7 +754,7 @@ export function OverviewPage({
               ))}
             </select>
             <p className="tiny" style={{ marginTop: "4px", color: "var(--accent)" }}>
-              🪄 Suggested by engine: {datasetProfile?.suggested_target || "None"}
+              Suggested by engine: {datasetProfile?.suggested_target || "None"}
             </p>
           </div>
 

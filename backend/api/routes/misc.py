@@ -9,7 +9,7 @@ import os
 
 from infra.database import db_session, DatasetModel, JobModel
 from infra.launch_origin import parse_launch_origin
-from infra.result_contract import normalize_results
+from infra.result_contract import normalize_results, sanitize_for_json
 from services.studio_service import narrate_experiment, synthetic_data_judge
 
 router = APIRouter(prefix="/api", tags=["misc"])
@@ -189,7 +189,7 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
         file_path = dataset.file_path
 
         try:
-            profile = json.loads(dataset.profile_json)
+            profile = sanitize_for_json(json.loads(dataset.profile_json))
         except Exception:
             profile = {}
 
@@ -234,7 +234,7 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
         return {"error": f"Failed to save synthetic dataset: {e}"}
 
     try:
-        new_profile = profile_dataset(expanded_df)
+        new_profile = sanitize_for_json(profile_dataset(expanded_df))
     except Exception:
         new_profile = profile.copy()
         new_profile.update(
@@ -273,7 +273,7 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
         except Exception:
             continue
 
-    return {
+    return sanitize_for_json({
         "dataset_id": dataset_id,
         "new_dataset_id": new_id,
         "original_rows": original_rows,
@@ -288,7 +288,7 @@ def synthetic_expand(dataset_id: str, n_rows: int = None):
         "profile": new_profile,
         "profile_diff": profile_diff,
         "preview": json.loads(synthetic_only.head(5).to_json(orient="records")),
-    }
+    })
 
 
 @router.get("/synthetic/judge/{dataset_id}")

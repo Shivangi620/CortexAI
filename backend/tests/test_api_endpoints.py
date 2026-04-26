@@ -2,6 +2,7 @@ import asyncio
 import json
 import math
 import os
+import zipfile
 import joblib
 import pandas as pd
 import numpy as np
@@ -9,7 +10,17 @@ from sklearn.linear_model import LogisticRegression
 from infra.database import DatasetModel, ExperimentRun, JobModel
 from infra.storage import get_model_path
 from .conftest import TestingSessionLocal
-from api.routes.datasets import get_latest_workspace, restore_workspace
+from api.routes.datasets import (
+    _dropbox_download_url,
+    SourceImportRequest,
+    _inspect_local_source,
+    _normalize_remote_url,
+    _onedrive_download_url,
+    get_latest_workspace,
+    import_from_source,
+    restore_workspace,
+    upload_dataset,
+)
 from api.routes.experiments import list_experiments
 from api.routes.drift import _resolve_retrain_launch_config, _resolve_retrain_launch_context
 from api.routes.predict import (
@@ -20,6 +31,7 @@ from api.routes.predict import (
     save_scenario_pack,
 )
 from api.routes.misc import synthetic_expand
+from services.studio_service import synthetic_data_judge
 from api.routes.reports import _artifact_filename, _model_card_html
 from api.routes.training import (
     TrainingRegistryPreviewRequest,
@@ -238,6 +250,62 @@ def test_synthetic_expand_returns_dataset_ids_and_actual_row_count(tmp_path):
     assert payload["new_dataset_id"]
     assert payload["synthetic_rows_added"] == 6
     assert payload["total_rows"] == len(frame) + 6
+
+
+def test_synthetic_judge_handles_nullable_boolean_columns(tmp_path):
+    parent_id = "synthetic-parent-ds"
+    child_id = "synthetic-child-ds"
+    parent_path = tmp_path / "parent.csv"
+    child_path = tmp_path / "child.csv"
+
+    parent = pd.DataFrame(
+        {
+            "flag": pd.Series([True, False, None], dtype="boolean"),
+            "segment": pd.Series(["A", "B", "A"], dtype="string"),
+            "value": [1.0, 2.0, 1.5],
+        }
+    )
+    child = pd.concat(
+        [
+            parent,
+            pd.DataFrame(
+                {
+                    "flag": pd.Series([True, None], dtype="boolean"),
+                    "segment": pd.Series(["A", "B"], dtype="string"),
+                    "value": [1.1, 1.9],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    parent.to_csv(parent_path, index=False)
+    child.to_csv(child_path, index=False)
+
+    with TestingSessionLocal() as db:
+        db.add(
+            DatasetModel(
+                id=parent_id,
+                file_path=os.fspath(parent_path),
+                profile_json=json.dumps({"rows": len(parent), "columns": list(parent.columns)}),
+                source_type="upload",
+            )
+        )
+        db.add(
+            DatasetModel(
+                id=child_id,
+                file_path=os.fspath(child_path),
+                profile_json=json.dumps({"rows": len(child), "columns": list(child.columns)}),
+                source_type="synthetic",
+                parent_dataset_id=parent_id,
+            )
+        )
+        db.commit()
+
+    payload = synthetic_data_judge(child_id)
+
+    assert payload["dataset_id"] == child_id
+    assert payload["rows_evaluated"] == 2
+    assert "realism_score" in payload
 
 
 def test_scenario_pack_persists_approval_policy_and_approved_scenarios():
@@ -668,3 +736,140 @@ def test_model_card_uses_metric_labels_and_non_percent_regression_scores():
     assert "51,971.0130" in html
     assert "Cross Validation" in html
     assert "Holdout Score" not in html
+
+
+def test_upload_accepts_generic_zip_dataset(tmp_path):
+    import zipfile
+
+    class FakeUpload:
+        def __init__(self, filename: str, content: bytes):
+            self.filename = filename
+            self._content = content
+            self._offset = 0
+
+        async def read(self, size: int = -1):
+            if self._offset >= len(self._content):
+                return b""
+            if size is None or size < 0:
+                size = len(self._content) - self._offset
+            chunk = self._content[self._offset : self._offset + size]
+            self._offset += len(chunk)
+            return chunk
+
+        async def close(self):
+            return None
+
+    archive_path = tmp_path / "dataset.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("folder/training_data.csv", "feature,target\n1,0\n2,1\n")
+
+    payload = asyncio.run(
+        upload_dataset(
+            file=FakeUpload("dataset.zip", archive_path.read_bytes()),
+            archive_member="folder/training_data.csv",
+        )
+    )
+
+    assert payload["ingest_summary"]["source_type"] == "zip_upload"
+    assert payload["ingest_summary"]["rows"] == 2
+
+
+def test_upload_dataset_sanitizes_non_finite_profile_stats():
+    class FakeUpload:
+        def __init__(self, filename: str, content: bytes):
+            self.filename = filename
+            self._content = content
+            self._offset = 0
+
+        async def read(self, size: int = -1):
+            if self._offset >= len(self._content):
+                return b""
+            if size is None or size < 0:
+                size = len(self._content) - self._offset
+            chunk = self._content[self._offset : self._offset + size]
+            self._offset += len(chunk)
+            return chunk
+
+        async def close(self):
+            return None
+
+    payload = asyncio.run(
+        upload_dataset(
+            file=FakeUpload("single-row.csv", b"value,target\n42,1\n"),
+        )
+    )
+
+    stats = payload["profile"]["column_stats"]["value"]
+    assert payload["dataset_id"]
+    assert stats["mean"] == 42.0
+    assert stats["std"] is None
+    assert stats["skew"] is None
+
+
+def test_import_source_supports_remote_json_api(monkeypatch):
+    from api.routes import datasets as dataset_routes
+
+    class FakeResponse:
+        headers = {"content-type": "application/json"}
+        request = type("Request", (), {"url": "https://api.example.com/data.json"})()
+
+        def json(self):
+            return {"data": [{"value": 1, "label": "a"}, {"value": 2, "label": "b"}]}
+
+    monkeypatch.setattr(dataset_routes, "_download_remote_payload", lambda *args, **kwargs: FakeResponse())
+
+    payload = import_from_source(
+        SourceImportRequest(
+            source_type="api",
+            connection_uri="https://api.example.com/data",
+            http_method="GET",
+            headers_json="{}",
+            body_json="{}",
+        )
+    )
+
+    assert payload["ingest_summary"]["rows"] == 2
+    assert payload["preview_records"][0]["label"] == "a"
+
+
+def test_inspect_local_source_reports_zip_members(tmp_path):
+    archive_path = tmp_path / "dataset.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("nested/data.csv", "value\n1\n")
+
+    payload = _inspect_local_source(os.fspath(archive_path), display_name="dataset.zip")
+
+    assert "nested/data.csv" in payload["zip_members"]
+    assert payload["recommended"]["archive_member"] == "nested/data.csv"
+
+
+def test_inspect_local_source_reports_excel_sheets(tmp_path):
+    excel_path = tmp_path / "inspect.xlsx"
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        pd.DataFrame({"value": [1]}).to_excel(writer, sheet_name="summary", index=False)
+        pd.DataFrame({"value": [2]}).to_excel(writer, sheet_name="detail", index=False)
+
+    payload = _inspect_local_source(os.fspath(excel_path), display_name="inspect.xlsx")
+
+    assert payload["excel_sheets"] == ["summary", "detail"]
+    assert payload["recommended"]["sheet_name"] == "summary"
+
+
+def test_dropbox_download_url_forces_direct_download():
+    direct = _dropbox_download_url("https://www.dropbox.com/s/abc123/data.csv?dl=0")
+    assert "dl=1" in direct
+
+
+def test_onedrive_download_url_adds_download_flag():
+    direct = _onedrive_download_url("https://onedrive.live.com/?cid=abc&resid=def")
+    assert "download=1" in direct
+
+
+def test_normalize_remote_url_routes_cloud_links():
+    assert _normalize_remote_url("https://www.dropbox.com/s/abc123/data.csv?dl=0", "dropbox").startswith(
+        "https://www.dropbox.com/"
+    )
+    assert "download=1" in _normalize_remote_url(
+        "https://onedrive.live.com/?cid=abc&resid=def",
+        "onedrive",
+    )

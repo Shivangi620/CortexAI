@@ -4,14 +4,18 @@ from pydantic import BaseModel
 import json
 import os
 import csv
+import tempfile
 import zipfile
 from uuid import uuid4
-from typing import Optional
+from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
+
+import httpx
 import pandas as pd
 from sqlalchemy import create_engine
 
 from infra.database import db_session, DatasetModel
-from infra.result_contract import normalize_results
+from infra.result_contract import normalize_results, sanitize_for_json
 from infra.storage import get_run_dir, get_model_path, get_metrics_path, get_schema_path
 from core.data_profiler import profile_dataset
 from core.health_score import compute_health_score
@@ -66,6 +70,13 @@ def _persist_dataframe_as_csv(dataset_id: str, df):
     return csv_path
 
 
+def _json_loads_safe(value: str | None, default: Any):
+    try:
+        return json.loads(value) if value else default
+    except Exception:
+        return default
+
+
 def _build_dataset_response(
     dataset_id: str,
     df,
@@ -76,7 +87,7 @@ def _build_dataset_response(
     sanitized = sanitize_dataframe(df, dataset_name=display_name)
     df = sanitized.df
     file_path = _persist_dataframe_as_csv(dataset_id, df)
-    profile = profile_dataset(df)
+    profile = sanitize_for_json(profile_dataset(df))
     profile["sanitizer"] = sanitized.report
     profile["sanitizer_logs"] = sanitized.logs
 
@@ -98,8 +109,8 @@ def _build_dataset_response(
         )
         db.commit()
 
-    preview_records = json.loads(df.head(8).to_json(orient="records", date_format="iso"))
-    return {
+    preview_records = sanitize_for_json(json.loads(df.head(8).to_json(orient="records", date_format="iso")))
+    return sanitize_for_json({
         "dataset_id": dataset_id,
         "profile": profile,
         "preview_records": preview_records,
@@ -112,10 +123,10 @@ def _build_dataset_response(
         },
         "sanitizer": sanitized.report,
         "sanitizer_logs": sanitized.logs,
-    }
+    })
 
 
-def _pick_dataset_member(names):
+def _pick_dataset_member(names, archive_member: str | None = None):
     preferred = ["training_dataset.csv", "data/data.csv"]
     for name in preferred:
         if name in names:
@@ -163,6 +174,18 @@ def _pick_dataset_member(names):
         if ext in preferred_exts:
             candidates.append(name)
 
+    if archive_member:
+        normalized_member = archive_member.strip("/")
+        for candidate in candidates:
+            if candidate.strip("/") == normalized_member:
+                return candidate
+        for name in names:
+            if name.strip("/") == normalized_member:
+                return name
+        raise ValueError(
+            f"Archive member '{archive_member}' was not found. Available candidates: {', '.join(candidates or names)}"
+        )
+
     if candidates:
         return candidates[0]
 
@@ -199,6 +222,307 @@ def _extract_bundle(zip_path: str):
                 payload["artifacts"][archive_name] = zipf.read(archive_name)
 
     return payload
+
+
+def _public_google_drive_download_url(raw_url: str) -> str:
+    parsed = urlparse(raw_url)
+    if "drive.google.com" not in parsed.netloc:
+        return raw_url
+
+    query = parse_qs(parsed.query or "")
+    file_id = query.get("id", [None])[0]
+    if not file_id:
+        parts = [part for part in parsed.path.split("/") if part]
+        try:
+            idx = parts.index("d")
+            file_id = parts[idx + 1]
+        except Exception:
+            file_id = None
+
+    if not file_id:
+        return raw_url
+    return f"https://drive.google.com/uc?export=download&id={file_id}"
+
+
+def _dropbox_download_url(raw_url: str) -> str:
+    parsed = urlparse(raw_url)
+    if "dropbox.com" not in parsed.netloc:
+        return raw_url
+    query = parse_qs(parsed.query or "")
+    query["dl"] = ["1"]
+    flattened = [(key, value) for key, values in query.items() for value in values]
+    return parsed._replace(query="&".join(f"{key}={value}" for key, value in flattened)).geturl()
+
+
+def _onedrive_download_url(raw_url: str) -> str:
+    parsed = urlparse(raw_url)
+    host = parsed.netloc.lower()
+    if "onedrive.live.com" not in host and "sharepoint.com" not in host and "1drv.ms" not in host:
+        return raw_url
+
+    url = raw_url
+    if "download=1" not in url:
+        url += "&download=1" if "?" in url else "?download=1"
+    return url
+
+
+def _normalize_remote_url(raw_url: str, source_type: str) -> str:
+    source_norm = str(source_type or "").strip().lower().replace(" ", "_")
+    if source_norm == "google_drive":
+        return _public_google_drive_download_url(raw_url)
+    if source_norm == "dropbox":
+        return _dropbox_download_url(raw_url)
+    if source_norm in {"onedrive", "sharepoint"}:
+        return _onedrive_download_url(raw_url)
+    return raw_url
+
+
+def _download_remote_payload(url: str, method: str = "GET", headers: dict | None = None, body: Any = None):
+    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+        response = client.request(method.upper(), url, headers=headers or {}, json=body)
+        response.raise_for_status()
+        return response
+
+
+def _temp_file_from_response(response: httpx.Response, hint: str = "remote") -> str:
+    parsed = urlparse(str(response.request.url))
+    ext = os.path.splitext(parsed.path or "")[1].lower()
+    if not ext:
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "json" in content_type:
+            ext = ".json"
+        elif "csv" in content_type or "text/plain" in content_type:
+            ext = ".csv"
+        elif "pdf" in content_type:
+            ext = ".pdf"
+        elif "html" in content_type:
+            ext = ".html"
+    ext = ext or ".csv"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix=f"{hint}_") as handle:
+        handle.write(response.content)
+        return handle.name
+
+
+def _load_remote_dataframe(
+    url: str,
+    source_type: str,
+    method: str = "GET",
+    headers: dict | None = None,
+    body: Any = None,
+    sheet_name: str | None = None,
+    sqlite_table: str | None = None,
+    archive_member: str | None = None,
+):
+    resolved_url = _normalize_remote_url(url, source_type)
+    response = _download_remote_payload(resolved_url, method=method, headers=headers, body=body)
+
+    if "json" in (response.headers.get("content-type") or "").lower():
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, list):
+            return pd.json_normalize(payload), {}
+        if isinstance(payload, dict):
+            if isinstance(payload.get("data"), list):
+                return pd.json_normalize(payload.get("data")), {}
+            return pd.json_normalize([payload]), {}
+
+    temp_path = _temp_file_from_response(response, hint=source_type.replace(" ", "_"))
+
+    try:
+        if temp_path.lower().endswith(".zip"):
+            bundle_payload = _extract_bundle(temp_path)
+            dataset_member = _pick_dataset_member(
+                zipfile.ZipFile(temp_path).namelist(),
+                archive_member=archive_member,
+            )
+            if not dataset_member:
+                raise ValueError("ZIP source did not contain a supported dataset file.")
+            extracted_ext = os.path.splitext(dataset_member)[1].lower() or ".csv"
+            extracted_path = os.path.join(
+                tempfile.gettempdir(), f"{uuid4().hex}{extracted_ext}"
+            )
+            with zipfile.ZipFile(temp_path) as archive:
+                with open(extracted_path, "wb") as extracted:
+                    extracted.write(archive.read(dataset_member))
+            try:
+                df = load_dataframe(
+                    filepath=extracted_path,
+                    sheet_name=sheet_name,
+                    sqlite_table=sqlite_table,
+                )
+            finally:
+                if os.path.exists(extracted_path):
+                    os.remove(extracted_path)
+            return df, bundle_payload
+
+        return (
+            load_dataframe(
+                filepath=temp_path,
+                sheet_name=sheet_name,
+                sqlite_table=sqlite_table,
+            ),
+            {},
+        )
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def _load_s3_dataframe(
+    connection_uri: str,
+    sheet_name: str | None = None,
+    sqlite_table: str | None = None,
+):
+    parsed = urlparse(connection_uri)
+    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path:
+        raise ValueError("S3 import expects a URI like s3://bucket/path/to/file.csv")
+
+    try:
+        import boto3
+    except ImportError as exc:
+        raise ValueError("S3 import requires the optional 'boto3' package.") from exc
+
+    suffix = os.path.splitext(parsed.path)[1].lower() or ".csv"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+        temp_path = handle.name
+
+    try:
+        boto3.client("s3").download_file(parsed.netloc, parsed.path.lstrip("/"), temp_path)
+        return load_dataframe(
+            filepath=temp_path,
+            sheet_name=sheet_name,
+            sqlite_table=sqlite_table,
+        )
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def _load_gcs_dataframe(
+    connection_uri: str,
+    sheet_name: str | None = None,
+    sqlite_table: str | None = None,
+):
+    parsed = urlparse(connection_uri)
+    if parsed.scheme != "gs" or not parsed.netloc or not parsed.path:
+        raise ValueError("GCS import expects a URI like gs://bucket/path/to/file.csv")
+
+    try:
+        from google.cloud import storage
+    except ImportError as exc:
+        raise ValueError("GCS import requires the optional 'google-cloud-storage' package.") from exc
+
+    suffix = os.path.splitext(parsed.path)[1].lower() or ".csv"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+        temp_path = handle.name
+
+    try:
+        client = storage.Client()
+        bucket = client.bucket(parsed.netloc)
+        blob = bucket.blob(parsed.path.lstrip("/"))
+        blob.download_to_filename(temp_path)
+        return load_dataframe(filepath=temp_path, sheet_name=sheet_name, sqlite_table=sqlite_table)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def _load_azure_blob_dataframe(
+    connection_uri: str,
+    sheet_name: str | None = None,
+    sqlite_table: str | None = None,
+):
+    parsed = urlparse(connection_uri)
+    if parsed.scheme not in {"az", "azure"} or not parsed.netloc or not parsed.path:
+        raise ValueError("Azure Blob import expects a URI like az://container/path/to/file.csv")
+
+    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
+    if not conn_str:
+        raise ValueError("Azure Blob import requires AZURE_STORAGE_CONNECTION_STRING to be set.")
+
+    try:
+        from azure.storage.blob import BlobServiceClient
+    except ImportError as exc:
+        raise ValueError("Azure Blob import requires the optional 'azure-storage-blob' package.") from exc
+
+    suffix = os.path.splitext(parsed.path)[1].lower() or ".csv"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+        temp_path = handle.name
+
+    try:
+        client = BlobServiceClient.from_connection_string(conn_str)
+        blob_client = client.get_blob_client(container=parsed.netloc, blob=parsed.path.lstrip("/"))
+        with open(temp_path, "wb") as output:
+            output.write(blob_client.download_blob().readall())
+        return load_dataframe(filepath=temp_path, sheet_name=sheet_name, sqlite_table=sqlite_table)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def _inspect_local_source(filepath: str, display_name: str = ""):
+    name = display_name or os.path.basename(filepath)
+    ext = os.path.splitext(name)[1].lower()
+    payload: dict[str, Any] = {
+        "filename": name,
+        "extension": ext,
+        "zip_members": [],
+        "excel_sheets": [],
+        "sqlite_tables": [],
+        "recommended": {},
+    }
+
+    try:
+        if ext == ".zip":
+            with zipfile.ZipFile(filepath) as archive:
+                names = [name for name in archive.namelist() if not name.endswith("/")]
+                payload["zip_members"] = names
+                recommended = _pick_dataset_member(names)
+                if recommended:
+                    payload["recommended"]["archive_member"] = recommended
+        elif ext in {".xlsx", ".xls", ".xlsm", ".ods"}:
+            if ext in {".xlsx", ".xlsm"}:
+                engine = "openpyxl"
+            elif ext == ".xls":
+                engine = "xlrd"
+            else:
+                engine = "odf"
+            workbook = pd.ExcelFile(filepath, engine=engine)
+            payload["excel_sheets"] = workbook.sheet_names
+            if workbook.sheet_names:
+                payload["recommended"]["sheet_name"] = workbook.sheet_names[0]
+        elif ext in {".db", ".sqlite", ".sqlite3"}:
+            with sqlite3.connect(filepath) as conn:
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                ).fetchall()
+            payload["sqlite_tables"] = [row[0] for row in rows]
+            if payload["sqlite_tables"]:
+                payload["recommended"]["sqlite_table"] = payload["sqlite_tables"][0]
+    except Exception as exc:
+        payload["warning"] = str(exc)
+
+    return payload
+
+
+def _inspect_remote_source(
+    url: str,
+    source_type: str,
+    method: str = "GET",
+    headers: dict | None = None,
+    body: Any = None,
+):
+    resolved_url = _normalize_remote_url(url, source_type)
+    response = _download_remote_payload(resolved_url, method=method, headers=headers, body=body)
+    temp_path = _temp_file_from_response(response, hint="inspect")
+    try:
+        return _inspect_local_source(temp_path, display_name=os.path.basename(urlparse(url).path) or "remote_source")
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def _restore_imported_job(dataset_id: str, bundle_payload: dict):
@@ -269,6 +593,10 @@ def _restore_imported_job(dataset_id: str, bundle_payload: dict):
 async def upload_dataset(
     file: UploadFile = File(...),
     pdf_mode: str = Form("text"),
+    sheet_name: str = Form(""),
+    sqlite_table: str = Form(""),
+    archive_member: str = Form(""),
+    text_chunk_size: int = Form(0),
 ):
     dataset_id = str(uuid4())
     os.makedirs("tmp", exist_ok=True)
@@ -289,13 +617,24 @@ async def upload_dataset(
         except Exception as e:
             if os.path.exists(uploaded_path):
                 os.remove(uploaded_path)
-            return {"error": f"Could not read export bundle: {e}"}
+            return {"error": f"Could not read ZIP archive: {e}"}
 
-        dataset_member = bundle_payload.get("dataset_member")
+        try:
+            with zipfile.ZipFile(uploaded_path) as zipf:
+                dataset_member = _pick_dataset_member(
+                    zipf.namelist(),
+                    archive_member=archive_member or None,
+                )
+        except Exception as e:
+            if os.path.exists(uploaded_path):
+                os.remove(uploaded_path)
+            return {"error": f"Could not inspect ZIP archive: {e}"}
         if not dataset_member:
             if os.path.exists(uploaded_path):
                 os.remove(uploaded_path)
-            return {"error": "ZIP archive does not include a reusable dataset. Export a fresh bundle and try again."}
+            return {
+                "error": "ZIP archive does not include a supported dataset file. Upload a CSV, Excel, JSON, Parquet, SQLite, image, PDF, or text document inside the archive."
+            }
 
         source_name = os.path.basename(dataset_member)
         source_path = os.path.join("tmp", f"{dataset_id}{os.path.splitext(source_name)[1].lower() or '.csv'}")
@@ -309,7 +648,13 @@ async def upload_dataset(
             return {"error": f"Failed to extract dataset from bundle: {e}"}
 
     try:
-        df = load_dataframe(filepath=source_path, pdf_mode=pdf_mode)
+        df = load_dataframe(
+            filepath=source_path,
+            pdf_mode=pdf_mode,
+            sheet_name=sheet_name or None,
+            sqlite_table=sqlite_table or None,
+            text_chunk_size=text_chunk_size,
+        )
     except Exception as e:
         for path in {uploaded_path, source_path}:
             if path and os.path.exists(path):
@@ -330,6 +675,8 @@ async def upload_dataset(
         source_type = "image_ocr"
     elif ext in {".db", ".sqlite", ".sqlite3"}:
         source_type = "database_import"
+    elif filename.lower().endswith(".zip"):
+        source_type = "zip_upload"
 
     try:
         response = _build_dataset_response(
@@ -370,16 +717,126 @@ async def upload_dataset(
 
 class SourceImportRequest(BaseModel):
     source_type: str
-    connection_uri: str
-    query: str
+    connection_uri: str = ""
+    query: str = ""
+    http_method: str = "GET"
+    headers_json: str = ""
+    body_json: str = ""
+    sheet_name: str = ""
+    sqlite_table: str = ""
+    archive_member: str = ""
+
+
+class SourceInspectRequest(BaseModel):
+    source_type: str = "url"
+    connection_uri: str = ""
+    http_method: str = "GET"
+    headers_json: str = ""
+    body_json: str = ""
+
+
+@router.post("/inspect-upload")
+async def inspect_upload(
+    file: UploadFile = File(...),
+):
+    temp_id = str(uuid4())
+    filename = file.filename or "upload.csv"
+    try:
+        uploaded_path = await _stream_upload_to_file(temp_id, filename, file)
+        return _inspect_local_source(uploaded_path, display_name=filename)
+    except Exception as e:
+        return {"error": f"Failed to inspect upload: {e}"}
+    finally:
+        temp_path = os.path.join("tmp", f"{temp_id}{os.path.splitext(filename or '')[1].lower() or '.csv'}")
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+@router.post("/inspect-source")
+def inspect_source(req: SourceInspectRequest):
+    source_type = str(req.source_type or "").strip().lower().replace(" ", "_")
+    try:
+        if source_type in {"s3", "gcs", "azure_blob"}:
+            parsed = urlparse(req.connection_uri)
+            ext = os.path.splitext(parsed.path or "")[1].lower()
+            return {
+                "filename": os.path.basename(parsed.path or "") or "remote_source",
+                "extension": ext,
+                "zip_members": [],
+                "excel_sheets": [],
+                "sqlite_tables": [],
+                "recommended": {},
+            }
+        headers = _json_loads_safe(req.headers_json, {})
+        body = _json_loads_safe(req.body_json, {})
+        return _inspect_remote_source(
+            req.connection_uri,
+            source_type=source_type,
+            method=req.http_method or ("POST" if body else "GET"),
+            headers=headers if isinstance(headers, dict) else {},
+            body=body if isinstance(body, (dict, list)) else {},
+        )
+    except Exception as e:
+        return {"error": f"Failed to inspect source: {e}"}
 
 
 @router.post("/import-source")
 def import_from_source(req: SourceImportRequest):
+    source_type = str(req.source_type or "").strip().lower()
     try:
-        engine = create_engine(req.connection_uri)
-        with engine.connect() as conn:
-            df = pd.read_sql_query(req.query, conn)
+        if source_type in {"postgresql", "mysql", "snowflake", "bigquery", "sql", "database"}:
+            engine = create_engine(req.connection_uri)
+            with engine.connect() as conn:
+                df = pd.read_sql_query(req.query, conn)
+        elif source_type in {
+            "csv url",
+            "csv_url",
+            "url",
+            "google_drive",
+            "rest api",
+            "rest_api",
+            "api",
+            "dropbox",
+            "onedrive",
+            "sharepoint",
+        }:
+            headers = _json_loads_safe(req.headers_json, {})
+            body = _json_loads_safe(req.body_json, {})
+            df, _ = _load_remote_dataframe(
+                req.connection_uri,
+                source_type=source_type.replace(" ", "_"),
+                method=req.http_method or ("POST" if body else "GET"),
+                headers=headers if isinstance(headers, dict) else {},
+                body=body if isinstance(body, (dict, list)) else {},
+                sheet_name=req.sheet_name or None,
+                sqlite_table=req.sqlite_table or None,
+                archive_member=req.archive_member or None,
+            )
+        elif source_type == "s3":
+            df = _load_s3_dataframe(
+                req.connection_uri,
+                sheet_name=req.sheet_name or None,
+                sqlite_table=req.sqlite_table or None,
+            )
+        elif source_type == "gcs":
+            df = _load_gcs_dataframe(
+                req.connection_uri,
+                sheet_name=req.sheet_name or None,
+                sqlite_table=req.sqlite_table or None,
+            )
+        elif source_type == "azure_blob":
+            df = _load_azure_blob_dataframe(
+                req.connection_uri,
+                sheet_name=req.sheet_name or None,
+                sqlite_table=req.sqlite_table or None,
+            )
+        else:
+            raise ValueError(
+                "Unsupported source type. Use PostgreSQL, MySQL, Snowflake, BigQuery, CSV URL, Google Drive, Dropbox, OneDrive, SharePoint, REST API, S3, GCS, or Azure Blob."
+            )
     except Exception as e:
         return {"error": f"Failed to import from {req.source_type}: {e}"}
 
@@ -391,8 +848,8 @@ def import_from_source(req: SourceImportRequest):
         return _build_dataset_response(
             dataset_id,
             df,
-            source_type=f"connector_{req.source_type}",
-            display_name=f"{req.source_type}_import",
+            source_type=f"connector_{source_type or req.source_type}",
+            display_name=f"{source_type or req.source_type}_import",
         )
     except Exception as e:
         return {"error": f"Failed to save imported dataset: {e}"}

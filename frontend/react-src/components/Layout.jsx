@@ -5,9 +5,13 @@ import { Badge } from "./ui.jsx";
 export function Layout({ currentPath, datasets, jobs, theme, toggleTheme, children }) {
   const current = ROUTES.find((route) => route.path === currentPath) || ROUTES[0];
   const completedJobs = jobs.filter((job) => job.status === "completed").length;
+  const nextThemeLabel = theme === "dark" ? "light" : "dark";
 
   return (
     <div className="studio-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to main content
+      </a>
       <div className="studio-shell__ambient studio-shell__ambient--one" />
       <div className="studio-shell__ambient studio-shell__ambient--two" />
 
@@ -25,13 +29,14 @@ export function Layout({ currentPath, datasets, jobs, theme, toggleTheme, childr
           </div>
         </div>
 
-        <nav className="studio-nav">
+        <nav className="studio-nav" aria-label="Studio sections">
           {ROUTES.map((route) => (
             <button
               key={route.path}
               type="button"
               className={`studio-nav__item ${route.path === currentPath ? "studio-nav__item--active" : ""}`}
               onClick={() => navigateTo(route.path)}
+              aria-current={route.path === currentPath ? "page" : undefined}
             >
               <span className="studio-nav__step">{route.step}</span>
               <span>
@@ -43,7 +48,7 @@ export function Layout({ currentPath, datasets, jobs, theme, toggleTheme, childr
         </nav>
       </aside>
 
-      <main className="studio-main">
+      <main className="studio-main" id="main-content" tabIndex={-1}>
         <header className="studio-topbar">
           <div>
             <span className="eyebrow">{current.step} / Studio Flow</span>
@@ -55,7 +60,12 @@ export function Layout({ currentPath, datasets, jobs, theme, toggleTheme, childr
               <span>Theme</span>
               <strong>{theme === "dark" ? "Dark" : "Light"}</strong>
             </div>
-            <button type="button" className="button button--secondary" onClick={toggleTheme}>
+            <button
+              type="button"
+              className="button button--secondary"
+              onClick={toggleTheme}
+              aria-label={`Switch to ${nextThemeLabel} theme`}
+            >
               Toggle Theme
             </button>
           </div>

@@ -3,6 +3,7 @@ import numpy as np
 import json
 import os
 import joblib
+import sqlite3
 import optuna
 import pytest
 import core.meta_learning as meta_learning_module
@@ -276,6 +277,60 @@ def test_load_dataframe_supports_markdown_documents():
     assert df.iloc[0]["source_file"] == "notes.md"
     assert df.iloc[0]["segment_type"] == "block"
     assert "Churn Notes" in df.iloc[0]["text"]
+
+
+def test_load_dataframe_can_chunk_text_documents():
+    markdown = b"# Heading\n\nabcdefghij"
+
+    df = load_dataframe(contents=markdown, filename="notes.md", text_chunk_size=4)
+
+    assert not df.empty
+    assert "chunk_index" in df.columns
+    assert set(df["segment_type"]) == {"block_chunk"}
+
+
+def test_load_dataframe_supports_eml_documents(tmp_path):
+    eml_path = tmp_path / "message.eml"
+    eml_path.write_text(
+        "Subject: Renewal risk\nFrom: ops@example.com\nTo: ml@example.com\n\nCustomer asked for a discount.",
+        encoding="utf-8",
+    )
+
+    df = load_dataframe(filepath=os.fspath(eml_path))
+
+    assert df.iloc[0]["subject"] == "Renewal risk"
+    assert "discount" in df.iloc[0]["text"]
+
+
+def test_load_dataframe_rejects_pickle_when_disabled(tmp_path, monkeypatch):
+    pickle_path = tmp_path / "frame.pkl"
+    pd.DataFrame({"value": [1, 2, 3]}).to_pickle(pickle_path)
+    monkeypatch.setattr("infra.config.settings.allow_pickle_uploads", False)
+
+    with pytest.raises(ValueError, match="disabled by default"):
+        load_dataframe(filepath=os.fspath(pickle_path))
+
+
+def test_load_dataframe_supports_named_excel_sheet(tmp_path):
+    excel_path = tmp_path / "multi_sheet.xlsx"
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        pd.DataFrame({"value": [1]}).to_excel(writer, sheet_name="first", index=False)
+        pd.DataFrame({"value": [7, 8]}).to_excel(writer, sheet_name="target_sheet", index=False)
+
+    df = load_dataframe(filepath=os.fspath(excel_path), sheet_name="target_sheet")
+
+    assert df["value"].tolist() == [7, 8]
+
+
+def test_load_dataframe_supports_named_sqlite_table(tmp_path):
+    sqlite_path = tmp_path / "multi_table.sqlite"
+    with sqlite3.connect(sqlite_path) as conn:
+        pd.DataFrame({"value": [1]}).to_sql("alpha", conn, index=False, if_exists="replace")
+        pd.DataFrame({"value": [9, 10]}).to_sql("beta", conn, index=False, if_exists="replace")
+
+    df = load_dataframe(filepath=os.fspath(sqlite_path), sqlite_table="beta")
+
+    assert df["value"].tolist() == [9, 10]
 
 
 def test_drift_dashboard_respects_custom_thresholds():

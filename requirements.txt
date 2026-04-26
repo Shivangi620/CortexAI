@@ -50,6 +50,9 @@ featuretools>=1.30.0
 mlflow>=2.13.0
 wandb>=0.17.0
 category-encoders>=2.6.3
+boto3>=1.35.0
+google-cloud-storage>=2.18.0
+azure-storage-blob>=12.23.0
 
 # ── Dev / Testing ───────────────────────────────────────
 pytest==8.2.0
