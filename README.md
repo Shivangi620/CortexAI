@@ -159,6 +159,7 @@ run_windows.bat
 ```
 
 This script builds the frontend bundle, wires Python dependencies, and starts the backend services for a local workstation flow.
+Redis is still required for background training, but Docker is not required. If you already have a local Redis service running on `127.0.0.1:6379`, the launcher will start the Celery worker automatically. If Redis is not running, the API still starts and the launcher tells you that background training is unavailable until Redis is configured.
 If you still invoke `start_windows.bat`, it now delegates to `run_windows.bat` so the Windows local path stays single-sourced.
 
 ### Docker local

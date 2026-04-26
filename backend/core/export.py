@@ -996,16 +996,10 @@ def create_export_bundle(job_id: str, results: dict) -> str:
             feature_names, target_name, best_model_name
         ),
         "api.py": _api_script_content(feature_names, target_name, best_model_name),
-        "explain.py": _explain_script_content(feature_names),
         "requirements.txt": _requirements_content(best_model_name, preprocessor_name),
         "run_training_windows.bat": _windows_runner_bat_content(),
         "sample_input.json": json.dumps({feature: None for feature in feature_names}, indent=2),
         "sample_output.json": json.dumps({"prediction": None, "target": target_name}, indent=2),
-        "pipeline_steps.json": _pipeline_steps_content(merged_results, model_metadata),
-        "PIPELINE_SOURCE.md": _source_manifest_content(),
-        "feature_dictionary.json": _feature_dictionary(
-            schema_data, feature_names, profile
-        ),
         "README.md": _readme_content(
             best_model_name=best_model_name,
             metric_name=metric_name,
@@ -1048,12 +1042,6 @@ def create_export_bundle(job_id: str, results: dict) -> str:
         if model_path and os.path.exists(model_path):
             zipf.write(model_path, arcname="model.pkl")
 
-        if os.path.exists(metadata_path):
-            zipf.write(metadata_path, arcname="model_metadata.json")
-        if os.path.exists(metrics_path):
-            zipf.write(metrics_path, arcname="metrics.json")
-        if os.path.exists(schema_path):
-            zipf.write(schema_path, arcname="schema.json")
         if dataset_path and os.path.exists(dataset_path):
             zipf.write(dataset_path, arcname="training_dataset.csv")
 
